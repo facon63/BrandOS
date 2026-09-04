@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 210" role="img" aria-label="BrandOS — paon couronné">
+  <g fill="none" stroke="#141414" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <g transform="translate(130 186) rotate(-72)"><path d="M0 -58 L0 -96"/><ellipse cx="0" cy="-110" rx="10" ry="13.5"/><ellipse cx="0" cy="-110" rx="4.4" ry="6.2"/></g>
+    <g transform="translate(130 186) rotate(-54)"><path d="M0 -58 L0 -96"/><ellipse cx="0" cy="-110" rx="10" ry="13.5"/><ellipse cx="0" cy="-110" rx="4.4" ry="6.2"/></g>
+    <g transform="translate(130 186) rotate(-36)"><path d="M0 -58 L0 -96"/><ellipse cx="0" cy="-110" rx="10" ry="13.5"/><ellipse cx="0" cy="-110" rx="4.4" ry="6.2"/></g>
+    <g transform="translate(130 186) rotate(-18)"><path d="M0 -58 L0 -96"/><ellipse cx="0" cy="-110" rx="10" ry="13.5"/><ellipse cx="0" cy="-110" rx="4.4" ry="6.2"/></g>
+    <g transform="translate(130 186) rotate(0)"><path d="M0 -58 L0 -96"/><ellipse cx="0" cy="-110" rx="10" ry="13.5"/><ellipse cx="0" cy="-110" rx="4.4" ry="6.2"/></g>
+    <g transform="translate(130 186) rotate(18)"><path d="M0 -58 L0 -96"/><ellipse cx="0" cy="-110" rx="10" ry="13.5"/><ellipse cx="0" cy="-110" rx="4.4" ry="6.2"/></g>
+    <g transform="translate(130 186) rotate(36)"><path d="M0 -58 L0 -96"/><ellipse cx="0" cy="-110" rx="10" ry="13.5"/><ellipse cx="0" cy="-110" rx="4.4" ry="6.2"/></g>
+    <g transform="translate(130 186) rotate(54)"><path d="M0 -58 L0 -96"/><ellipse cx="0" cy="-110" rx="10" ry="13.5"/><ellipse cx="0" cy="-110" rx="4.4" ry="6.2"/></g>
+    <g transform="translate(130 186) rotate(72)"><path d="M0 -58 L0 -96"/><ellipse cx="0" cy="-110" rx="10" ry="13.5"/><ellipse cx="0" cy="-110" rx="4.4" ry="6.2"/></g>
+    <ellipse cx="130" cy="186" rx="17" ry="20"/>
+    <path d="M124 170 L126 158 M136 170 L134 158"/>
+    <circle cx="130" cy="152" r="11.5"/>
+    <path d="M130 158 L126.5 163 L133.5 163 Z"/>
+    <path d="M117 140 L117 127 L123.5 133.5 L130 122 L136.5 133.5 L143 127 L143 140 Z" fill="#FFD600" stroke="#FFD600"/>
+  </g>
+</svg>
