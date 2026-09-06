@@ -116,19 +116,31 @@ export function BrandBoard({
 export function BoardNotes({
   snapshot,
   variant,
+  tone = "light",
 }: {
   snapshot: BrandSnapshot;
   variant: "before" | "after";
+  tone?: "light" | "dark";
 }) {
   return (
     <ul className="mt-4 flex flex-col gap-2">
       {snapshot.notes.map((note) => (
-        <li key={note} className="flex gap-2.5 text-[14px] leading-snug text-ink-600">
+        <li
+          key={note}
+          className={cx(
+            "flex gap-2.5 text-[14px] leading-snug",
+            tone === "dark" ? "text-white/50" : "text-ink-600",
+          )}
+        >
           <span
             aria-hidden="true"
             className={cx(
               "mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full",
-              variant === "before" ? "bg-ink-300" : "bg-teal",
+              variant === "before"
+                ? tone === "dark"
+                  ? "bg-white/25"
+                  : "bg-ink-300"
+                : "bg-teal",
             )}
           />
           {note}

@@ -9,7 +9,7 @@ export default function NotFound() {
     <PageShell offsetHeader>
       <Section tone="white" spacing="loose">
         <div className="mx-auto max-w-xl text-center">
-          <PeacockMarkStatic className="mx-auto h-28 w-auto text-ink-200" monochrome />
+          <PeacockMarkStatic className="mx-auto h-28 w-auto text-ink-200" detail="silhouette" />
 
           <Eyebrow className="mt-8">Erreur 404</Eyebrow>
           <h1 className="mt-3 text-4xl text-ink-900 sm:text-5xl">

@@ -1,3 +1,7 @@
+"use client";
+
+import { motion, useInView, useReducedMotion } from "framer-motion";
+import { useRef } from "react";
 import { cx } from "@/lib/format";
 import type { MockVisual } from "@/lib/types";
 
@@ -55,8 +59,23 @@ function ChromeBar({ label }: { label: string }) {
   );
 }
 
-/* --- Dashboard : la vue signature du Kit ---------------------------------- */
-export function DashboardMock({ className }: { className?: string }) {
+/* --- Dashboard : la vue signature du Kit ----------------------------------
+   `animated` fait se remplir les barres à l'entrée dans le viewport : le
+   dashboard se « charge » sous les yeux du visiteur au lieu d'être un décor
+   figé. */
+export function DashboardMock({
+  className,
+  animated = false,
+}: {
+  className?: string;
+  animated?: boolean;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const reduced = useReducedMotion();
+  const inView = useInView(ref, { once: true, margin: "-10%" });
+  const play = animated && !reduced;
+  const fill = (percent: number) => (play ? (inView ? percent : 0) : percent);
+
   const pillars = [
     { label: "Positionnement", percent: 100 },
     { label: "Identité visuelle", percent: 72 },
@@ -65,7 +84,7 @@ export function DashboardMock({ className }: { className?: string }) {
   ];
 
   return (
-    <div className={cx("flex flex-col gap-4", className)}>
+    <div ref={ref} className={cx("flex flex-col gap-4", className)}>
       <div className="rounded-md border border-ink-200 bg-white p-4">
         <div className="flex items-baseline justify-between">
           <p className="font-display text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-400">
@@ -76,7 +95,12 @@ export function DashboardMock({ className }: { className?: string }) {
           </p>
         </div>
         <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-ink-100">
-          <div className="h-full w-[59%] rounded-full bg-crown" />
+          <motion.div
+            className="h-full rounded-full bg-crown"
+            initial={false}
+            animate={{ width: `${fill(59)}%` }}
+            transition={{ duration: 1.1, ease: [0.16, 1, 0.3, 1] }}
+          />
         </div>
         <p className="mt-3 text-[12px] text-ink-500">
           Prochaine action —{" "}
@@ -87,7 +111,7 @@ export function DashboardMock({ className }: { className?: string }) {
       </div>
 
       <div className="grid gap-2.5">
-        {pillars.map((p) => (
+        {pillars.map((p, i) => (
           <div
             key={p.label}
             className="flex min-w-0 items-center gap-3 rounded-md border border-ink-200 bg-white px-3.5 py-2.5"
@@ -96,12 +120,18 @@ export function DashboardMock({ className }: { className?: string }) {
               {p.label}
             </span>
             <span className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-ink-100">
-              <span
+              <motion.span
                 className={cx(
                   "block h-full rounded-full",
                   p.percent === 100 ? "bg-teal" : "bg-crown",
                 )}
-                style={{ width: `${p.percent}%` }}
+                initial={false}
+                animate={{ width: `${fill(p.percent)}%` }}
+                transition={{
+                  duration: 1,
+                  delay: 0.15 + i * 0.1,
+                  ease: [0.16, 1, 0.3, 1],
+                }}
               />
             </span>
             <span className="w-9 shrink-0 text-right font-display text-[11px] font-semibold text-ink-500">

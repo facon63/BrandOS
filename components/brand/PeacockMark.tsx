@@ -2,56 +2,59 @@
 
 import { motion, useReducedMotion } from "framer-motion";
 import { cx } from "@/lib/format";
+import { Feather } from "./Feather";
 import {
-  ANGLES_COMPACT,
-  ANGLES_FULL,
   BEAK,
   BODY,
-  CROWN,
-  FEATHER_EYE,
-  FEATHER_PUPIL,
-  FEATHER_STEM,
+  CROWN_BAND,
+  CROWN_CROSS,
+  CROWN_POINTS,
+  EYES,
+  FAN_COMPACT,
+  FAN_FULL,
   HEAD,
   NECK,
-  PIVOT_X,
-  PIVOT_Y,
-  VIEW_BOX,
+  featherScale,
 } from "./peacock-geometry";
 
+/* Le plumage pivote autour du point où toutes les plumes se rejoignent. */
+const PIVOT = { x: 250, y: 340 };
+const VIEW_BOX = "0 0 500 400";
+/* Cadrage serré sur le dessin : sans lui, la marge vide du viewBox complet
+   réduirait le symbole à une tache illisible dans le header. */
+const VIEW_BOX_COMPACT = "128 138 244 246";
+
 /**
- * Symbole BrandOS : paon de face, plumes déployées, couronne.
+ * Symbole BrandOS — paon couronné, plumes en lame.
  *
- * Micro-interaction signature : quand `deployed` vaut `false`, les plumes sont
- * partiellement refermées et s’ouvrent en éventail au survol, du centre vers
- * l’extérieur. Réservée aux éléments phares (logo du header, cards produits) —
- * jamais partout.
- *
- * Le tracé utilise `currentColor` : le symbole fonctionne donc en inversé
- * (blanc) sur Obsidian Black, Charcoal ou Peacock Teal.
+ * Micro-interaction signature : au repos l'éventail est resserré ; au survol
+ * il se déploie du centre vers l'extérieur, et les pupilles s'ouvrent. La
+ * couronne reste immobile — c'est le point fixe autour duquel tout se déploie.
  */
 export function PeacockMark({
   className,
   deployed = true,
   compact = false,
-  monochrome = false,
-  strokeWidth = 3,
+  strokeWidth = 2.4,
+  detail,
 }: {
   className?: string;
-  /** `true` = éventail ouvert en permanence. `false` = ouverture au survol. */
+  /** `false` = éventail resserré au repos, ouverture au survol. */
   deployed?: boolean;
-  /** Éventail à 5 plumes : lisible en très petite taille (header, favicon). */
+  /** 7 plumes au lieu de 15 : lisible à très petite taille. */
   compact?: boolean;
-  monochrome?: boolean;
   strokeWidth?: number;
+  detail?: "full" | "simple" | "silhouette";
 }) {
   const reduced = useReducedMotion();
-  const angles = compact ? ANGLES_COMPACT : ANGLES_FULL;
-  const spread = compact ? 58 : 72;
+  const angles = compact ? FAN_COMPACT : FAN_FULL;
+  const spread = compact ? 62 : 78;
+  const lod = detail ?? (compact ? "simple" : "full");
   const interactive = !deployed && !reduced;
 
   return (
     <motion.svg
-      viewBox={VIEW_BOX}
+      viewBox={compact ? VIEW_BOX_COMPACT : VIEW_BOX}
       role="img"
       aria-label="BrandOS — un paon couronné, plumes déployées"
       className={cx("select-none overflow-visible", className)}
@@ -68,62 +71,72 @@ export function PeacockMark({
         strokeLinejoin="round"
       >
         {angles.map((angle) => {
-          /* Cascade : les plumes centrales s’ouvrent en premier. */
           const distance = Math.abs(angle) / spread;
+          const scale = featherScale(angle, spread);
           return (
             <motion.g
               key={angle}
               style={{
                 transformBox: "view-box",
-                transformOrigin: `${PIVOT_X}px ${PIVOT_Y}px`,
+                transformOrigin: `${PIVOT.x}px ${PIVOT.y}px`,
               }}
               variants={{
-                /* Repli mesuré : le symbole doit rester lisible à 32 px,
-                   même refermé. L’ouverture au survol reste perceptible. */
-                rest: { rotate: -angle * 0.32, opacity: 1 - distance * 0.2 },
+                rest: { rotate: -angle * 0.42, opacity: 1 - distance * 0.35 },
                 open: { rotate: 0, opacity: 1 },
               }}
               transition={{
-                duration: 0.55,
-                delay: distance * 0.06,
-                ease: [0.22, 1, 0.36, 1],
+                duration: 0.7,
+                delay: distance * 0.05,
+                ease: [0.16, 1, 0.3, 1],
               }}
             >
-              <g transform={`translate(${PIVOT_X} ${PIVOT_Y}) rotate(${angle})`}>
-                <path d={FEATHER_STEM} />
-                {/* Motif « œil » : être vu, être reconnu. */}
-                <ellipse {...FEATHER_EYE} />
-                <ellipse {...FEATHER_PUPIL} />
+              <g
+                transform={`translate(${PIVOT.x} ${PIVOT.y}) rotate(${angle}) scale(${scale})`}
+              >
+                <Feather detail={lod} />
               </g>
             </motion.g>
           );
         })}
 
-        <PeacockBody monochrome={monochrome} />
+        {/* Corps, cou, tête — dessinés par-dessus le plumage. */}
+        <g transform={`translate(${PIVOT.x} ${PIVOT.y + 26})`}>
+          <path d={BODY} />
+          <path d={NECK} />
+          <path d={HEAD} />
+          {lod === "full" && EYES.map((d) => <path key={d} d={d} />)}
+          <path d={BEAK} />
+
+          {/* La couronne : dorée, jamais Crown Yellow. */}
+          <g stroke="var(--color-crown-gold)" fill="var(--color-crown-gold)">
+            <path d={CROWN_POINTS} />
+            <path d={CROWN_BAND} />
+            <path d={CROWN_CROSS} fill="none" strokeWidth={strokeWidth} />
+          </g>
+        </g>
       </g>
     </motion.svg>
   );
 }
 
-/**
- * Version statique du symbole, sans framer-motion.
- * À utiliser partout où l’animation n’apporte rien : footer, filigranes.
- */
+/** Version sans framer-motion, pour les filigranes et le footer. */
 export function PeacockMarkStatic({
   className,
   compact = false,
-  monochrome = false,
-  strokeWidth = 3,
+  strokeWidth = 2.4,
+  detail,
 }: {
   className?: string;
   compact?: boolean;
-  monochrome?: boolean;
   strokeWidth?: number;
+  detail?: "full" | "simple" | "silhouette";
 }) {
-  const angles = compact ? ANGLES_COMPACT : ANGLES_FULL;
+  const angles = compact ? FAN_COMPACT : FAN_FULL;
+  const spread = compact ? 62 : 78;
+  const lod = detail ?? (compact ? "simple" : "full");
 
   return (
-    <svg viewBox={VIEW_BOX} aria-hidden="true" className={cx("select-none", className)}>
+    <svg viewBox={compact ? VIEW_BOX_COMPACT : VIEW_BOX} aria-hidden="true" className={cx("select-none", className)}>
       <g
         fill="none"
         stroke="currentColor"
@@ -132,32 +145,25 @@ export function PeacockMarkStatic({
         strokeLinejoin="round"
       >
         {angles.map((angle) => (
-          <g key={angle} transform={`translate(${PIVOT_X} ${PIVOT_Y}) rotate(${angle})`}>
-            <path d={FEATHER_STEM} />
-            <ellipse {...FEATHER_EYE} />
-            <ellipse {...FEATHER_PUPIL} />
+          <g
+            key={angle}
+            transform={`translate(${PIVOT.x} ${PIVOT.y}) rotate(${angle}) scale(${featherScale(angle, spread)})`}
+          >
+            <Feather detail={lod} />
           </g>
         ))}
-        <PeacockBody monochrome={monochrome} />
+        <g transform={`translate(${PIVOT.x} ${PIVOT.y + 26})`}>
+          <path d={BODY} />
+          <path d={NECK} />
+          <path d={HEAD} />
+          <path d={BEAK} />
+          <g stroke="var(--color-crown-gold)" fill="var(--color-crown-gold)">
+            <path d={CROWN_POINTS} />
+            <path d={CROWN_BAND} />
+            <path d={CROWN_CROSS} fill="none" strokeWidth={strokeWidth} />
+          </g>
+        </g>
       </g>
     </svg>
-  );
-}
-
-/** Corps + tête + couronne. Partagé par les deux variantes. */
-function PeacockBody({ monochrome }: { monochrome: boolean }) {
-  return (
-    <>
-      <ellipse {...BODY} />
-      <path d={NECK} />
-      <circle {...HEAD} />
-      <path d={BEAK} />
-      {/* Couronne : maîtrise, positionnement premium. */}
-      <path
-        d={CROWN}
-        fill={monochrome ? "none" : "var(--color-crown)"}
-        stroke={monochrome ? "currentColor" : "var(--color-crown)"}
-      />
-    </>
   );
 }

@@ -35,7 +35,7 @@ export function Logo({
       <Mark
         compact
         {...markProps}
-        strokeWidth={4}
+        strokeWidth={3.4}
         className={cx(
           "h-8 w-auto shrink-0",
           tone === "dark" ? "text-white" : "text-obsidian",

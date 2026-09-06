@@ -19,7 +19,7 @@ export function PageShell({
   offsetHeader = false,
 }: {
   children: React.ReactNode;
-  headerTone?: "light" | "dark";
+  headerTone?: "light" | "dark" | "dark-sticky";
   offsetHeader?: boolean;
 }) {
   return (

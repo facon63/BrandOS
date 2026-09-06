@@ -53,7 +53,7 @@ export default function FormationPage() {
       <div className="on-dark relative overflow-hidden bg-obsidian pt-[72px] text-white">
         <div className="grid-lines pointer-events-none absolute inset-0" aria-hidden="true" />
         <PeacockMarkStatic
-          monochrome
+          detail="silhouette"
           className="pointer-events-none absolute -left-24 top-24 h-[24rem] w-auto text-white/[0.04]"
         />
 

@@ -16,7 +16,13 @@ import { cx } from "@/lib/format";
  * `tone="dark"` est passé par les pages dont le hero est sombre : le logo et
  * les liens passent en blanc tant que le header est transparent.
  */
-export function Header({ tone = "light" }: { tone?: "light" | "dark" }) {
+export function Header({
+  tone = "light",
+}: {
+  /** `dark-sticky` : la page entière est sombre, le header ne repasse jamais
+      en blanc au scroll — il se contente de se densifier. */
+  tone?: "light" | "dark" | "dark-sticky";
+}) {
   const [scrolled, setScrolled] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const pathname = usePathname();
@@ -40,7 +46,10 @@ export function Header({ tone = "light" }: { tone?: "light" | "dark" }) {
     };
   }, [menuOpen]);
 
-  const onDark = tone === "dark" && !scrolled;
+  const darkPage = tone === "dark-sticky";
+  /* Le header est en mode inversé tant qu'il flotte sur une section sombre —
+     et en permanence quand toute la page l'est. */
+  const onDark = darkPage || (tone === "dark" && !scrolled);
 
   return (
     <>
@@ -55,7 +64,9 @@ export function Header({ tone = "light" }: { tone?: "light" | "dark" }) {
         className={cx(
           "fixed inset-x-0 top-0 z-50 transition-all duration-300 ease-[--ease-brand]",
           scrolled
-            ? "border-b border-ink-200 bg-white/90 backdrop-blur-md"
+            ? darkPage
+              ? "border-b border-white/10 bg-obsidian/75 backdrop-blur-xl"
+              : "border-b border-ink-200 bg-white/90 backdrop-blur-md"
             : "border-b border-transparent",
           onDark && "on-dark",
         )}

@@ -18,6 +18,13 @@
   --color-teal: #3399a6; /* Peacock Teal — liens, badges, graphismes       */
   --color-teal-hover: #2b8290; /* dérivé                                   */
   --color-teal-soft: #e8f3f5; /* dérivé : fonds de badges clairs           */
+  --color-teal-deep: #256974; /* dérivé : aplat de section, fond de card   */
+  --color-teal-abyss: #14343a; /* dérivé : le plus sombre des aplats teal  */
+
+  /* Or de la couronne. Prélevé sur le logo officiel : la couronne n'est pas
+     en Crown Yellow, elle est métallique. Usage strictement réservé à la
+     couronne et à ses rappels — jamais un accent d'interface.              */
+  --color-crown-gold: #c9a227;
 
   --color-pearl: #f0f0f2; /* Pearl Grey — cards, sections alternées        */
 
