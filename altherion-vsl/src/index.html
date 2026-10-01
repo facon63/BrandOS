@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Altherion — VSL</title>
+<style>
+  @font-face { font-family: "Cormorant Garamond"; font-weight: 300; src: url(../assets/fonts/cormorant-garamond-latin-300-normal.woff2) format("woff2"); }
+  @font-face { font-family: "Cormorant Garamond"; font-weight: 400; src: url(../assets/fonts/cormorant-garamond-latin-400-normal.woff2) format("woff2"); }
+  @font-face { font-family: "Cormorant Garamond"; font-weight: 400; font-style: italic; src: url(../assets/fonts/cormorant-garamond-latin-400-italic.woff2) format("woff2"); }
+  @font-face { font-family: "Cormorant Garamond"; font-weight: 500; src: url(../assets/fonts/cormorant-garamond-latin-500-normal.woff2) format("woff2"); }
+  @font-face { font-family: "Cormorant Garamond"; font-weight: 600; src: url(../assets/fonts/cormorant-garamond-latin-600-normal.woff2) format("woff2"); }
+  @font-face { font-family: Manrope; font-weight: 400; src: url(../assets/fonts/manrope-latin-400-normal.woff2) format("woff2"); }
+  @font-face { font-family: Manrope; font-weight: 500; src: url(../assets/fonts/manrope-latin-500-normal.woff2) format("woff2"); }
+  @font-face { font-family: Manrope; font-weight: 600; src: url(../assets/fonts/manrope-latin-600-normal.woff2) format("woff2"); }
+  @font-face { font-family: Manrope; font-weight: 700; src: url(../assets/fonts/manrope-latin-700-normal.woff2) format("woff2"); }
+  @font-face { font-family: "JetBrains Mono"; font-weight: 400; src: url(../assets/fonts/jetbrains-mono-latin-400-normal.woff2) format("woff2"); }
+  @font-face { font-family: "JetBrains Mono"; font-weight: 500; src: url(../assets/fonts/jetbrains-mono-latin-500-normal.woff2) format("woff2"); }
+  :root { --night: #0E1030; --gold: #E8C46A; --star: #F4F1E8; }
+  html, body { margin: 0; height: 100%; background: var(--night); color: var(--star); font-family: Manrope, sans-serif; }
+  body { display: grid; place-items: center; overflow: hidden; }
+  canvas { display: block; width: min(100vw, calc(100vh * 16 / 9)); aspect-ratio: 16 / 9; }
+  #bar { position: fixed; left: 16px; right: 16px; bottom: 12px; display: flex; gap: 12px; align-items: center; font-size: 13px; opacity: .85; }
+  #bar button { background: var(--gold); color: var(--night); border: 0; border-radius: 6px; padding: 6px 14px; font: 700 12px Manrope, sans-serif; letter-spacing: .15em; cursor: pointer; }
+  #bar input { flex: 1; accent-color: var(--gold); }
+  body.render #bar { display: none; }
+  body.render canvas { width: 1920px; height: 1080px; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<div id="bar"><button id="play">LECTURE</button><input id="seek" type="range" min="0" max="60" step="0.01" value="0"><span id="tc">0.00</span></div>
+<script type="module" src="main.js"></script>
+</body>
+</html>

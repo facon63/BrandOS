@@ -1,0 +1,9 @@
+# rendus intermédiaires (out/ est aussi ignoré à la racine) ; les livrables vont dans livrables/
+out/
+audio/vo.wav
+# Règles d'anonymat de la charte : la vraie photo du fondateur et tout ce qui
+# permet de le reconnaître restent hors du dépôt (public). À déposer en local.
+assets/img/founder.jpg
+assets/img/founder_cutout.png
+assets/img/founder_graded.png
+livrables/*photo*
