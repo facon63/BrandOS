@@ -1,6 +1,7 @@
 """Vidéos déjà montées : mesures, bruitages reconnus, guide de style et API."""
 
 import wave
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -78,7 +79,7 @@ def test_detector_finds_sounds_without_false_positives():
     sr = 8000
     rng = np.random.default_rng(0)
     n = 90 * sr
-    env = np.repeat(rng.uniform(0, 1, n // 800 + 1) > 0.4, 800)[:n] * 0.3
+    env = 0.1 + np.repeat(rng.uniform(0, 1, n // 800 + 1) > 0.4, 800)[:n] * 0.2  # bruit jamais coupé
     tt = np.arange(n) / sr
     signal = np.convolve(rng.standard_normal(n), np.ones(4) / 4, "same") * env + 0.05 * np.sin(2 * np.pi * 440 * tt)
     ts = np.arange(int(0.6 * sr)) / sr
@@ -89,9 +90,107 @@ def test_detector_finds_sounds_without_false_positives():
     detector = Detector(signal.astype(np.float32), sr)
     hits = detector.find(boing.astype(np.float32))
     assert [round(t, 1) for t, _ in hits] == [10.0, 47.3]
-    tone = 0.4 * np.sin(2 * np.pi * 440 * np.arange(int(0.5 * sr)) / sr)  # même note que le fond : piège
+    tone = 0.4 * np.sin(2 * np.pi * 440 * np.arange(int(0.5 * sr)) / sr)  # même note que le fond (bourdonnement) : piège
     assert detector.find(tone.astype(np.float32)) == []
     assert detector.find(np.zeros(100, np.float32)) == []  # trop court
+
+
+class FakeLibrary:
+    """Bibliothèque en mémoire pour tester la détection sans fichiers."""
+
+    def __init__(self, sounds: dict, music: dict | None = None):
+        self.sounds = {f"sfx/{k}": v for k, v in sounds.items()}
+        self.sounds.update({f"music/{k}": v for k, v in (music or {}).items()})
+
+    def of_kind(self, kind):
+        return [
+            {"id": i, "name": i.split("/")[1], "kind": kind, "duration": len(x) / 8000}
+            for i, x in self.sounds.items()
+            if i.startswith(kind)
+        ]
+
+    def path_of(self, asset):
+        return Path(asset["id"])
+
+
+def fake_audio(lib):
+    return lambda path, cache_dir: lib.sounds[str(path)]
+
+
+def voice_like(seconds, seed):
+    """Bruit modulé comme de la parole : syllabes et pauses, spectre de voix."""
+    sr = 8000
+    rng = np.random.default_rng(seed)
+    n = int(seconds * sr)
+    syll = np.repeat(rng.uniform(0.2, 1.0, n // 1200 + 1) * (rng.uniform(0, 1, n // 1200 + 1) > 0.25), 1200)[:n]
+    env = np.convolve(syll, np.hanning(400) / 200, "same")
+    noise = np.convolve(rng.standard_normal(n), np.hanning(12) / 6, "same")
+    pitch = np.sin(2 * np.pi * np.cumsum(140 + 30 * np.sin(np.arange(n) / sr * 2.1)) / sr)
+    return (0.08 * env * (noise + 1.5 * pitch)).astype(np.float32)
+
+
+def music_like(seconds, seed):
+    """Morceau synthétique : accords qui changent, batterie, mélodie (jamais deux fois pareil)."""
+    sr = 8000
+    rng = np.random.default_rng(seed)
+    n = int(seconds * sr)
+    out = np.zeros(n)
+    beat = int(sr * 60 / rng.uniform(90, 130))
+    tt = np.arange(beat) / sr
+    for k, i0 in enumerate(range(0, n - beat, beat)):
+        f = 110 * 2 ** (rng.integers(0, 24) / 12)
+        seg = sum(np.sin(2 * np.pi * f * m * tt + rng.uniform(0, 6)) / m for m in (1, 2, 3))
+        seg += 0.5 * rng.standard_normal(beat) * np.exp(-tt * 40)  # charleston
+        out[i0 : i0 + beat] += seg * np.exp(-tt * 3)
+    return (0.3 * out / np.max(np.abs(out))).astype(np.float32)
+
+
+def test_music_found_under_voice_but_not_a_lookalike(monkeypatch):
+    from krokcut import sfx_detect
+
+    sr = 8000
+    track, other = music_like(60, 1), music_like(60, 2)
+    voice = voice_like(90, 3)
+    mixed = voice.copy()
+    gain = np.sqrt(np.mean(voice**2) / np.mean(track**2)) * 10 ** (-16 / 20)  # 16 dB sous les voix
+    mixed[10 * sr : 50 * sr] += gain * track[5 * sr : 45 * sr]
+    lib = FakeLibrary({}, {"generique": track, "autre": other})
+    monkeypatch.setattr(sfx_detect, "load_asset_audio", fake_audio(lib))
+    result = sfx_detect.detect_library_sounds(mixed, lib, Path("."))
+    assert [m["asset"] for m in result["music"]] == ["music/generique"]
+    assert result["hits"] == []
+    # Seule, au tout début de la vidéo (intro de 10 s), elle est aussi reconnue
+    intro = voice.copy()
+    intro[: 10 * sr] = track[: 10 * sr]
+    assert [m["asset"] for m in sfx_detect.detect_library_sounds(intro, lib, Path("."))["music"]] == ["music/generique"]
+
+
+def test_layered_sounds_kept_but_echoes_dropped(monkeypatch):
+    from krokcut import sfx_detect
+
+    sr = 8000
+    rng = np.random.default_rng(4)
+    ts = np.arange(int(0.6 * sr)) / sr
+    chirp = (0.5 * np.sin(2 * np.pi * (300 + 1800 * ts) * ts) * np.exp(-3 * ts)).astype(np.float32)
+    tb = np.arange(int(1.5 * sr)) / sr
+    blast = (np.convolve(rng.standard_normal(len(tb)), np.ones(3) / 3, "same") * np.exp(-2.5 * tb) * 0.5).astype(np.float32)
+    jingle = music_like(6, 5)
+    signal = (0.002 * rng.standard_normal(40 * sr)).astype(np.float32)  # pièce calme : pas de voix pour masquer
+    for at, x in ((5.0, blast), (5.0, chirp), (12.0, chirp), (12.25, chirp), (20.0, jingle), (30.0, blast)):
+        i = int(at * sr)
+        signal[i : i + len(x)] += x
+    lib = FakeLibrary({"chirp": chirp, "explosion": blast}, {"jingle": jingle})
+    monkeypatch.setattr(sfx_detect, "load_asset_audio", fake_audio(lib))
+    result = sfx_detect.detect_library_sounds(signal, lib, Path("."))
+    found = [(h["asset"], h["t"]) for h in result["hits"]]
+    assert found == [
+        ("sfx/chirp", 5.0),
+        ("sfx/explosion", 5.0),  # deux sons superposés : les deux comptent
+        ("sfx/chirp", 12.0),
+        ("sfx/chirp", 12.25),  # répété aussitôt : deux fois
+        ("sfx/explosion", 30.0),
+    ]
+    assert [m["asset"] for m in result["music"]] == ["music/jingle"]  # musique courte : comptée comme musique
 
 
 def test_rhythm_metrics_and_timeline_text():
@@ -368,28 +467,28 @@ def test_job_priority_and_cancel_during_analyze(workspace, library_dir, publishe
     assert store.open(doc.id).state.steps["analyze"].status == "pending"
 
 
-def test_sticky_sound_marked_unreliable_on_long_video(monkeypatch, tmp_path):
+def test_sticky_sound_marked_unreliable(monkeypatch, tmp_path):
     from krokcut import sfx_detect
 
-    class FakeDetector:
-        def __init__(self, signal, *a, **k):
-            pass
-
-        def find(self, template, max_hits=200, **kwargs):
-            return [(i * 5.0, 0.5) for i in range(min(max_hits + 1, 360))]  # 12 fois par minute
-
-    monkeypatch.setattr(sfx_detect, "Detector", FakeDetector)
-    monkeypatch.setattr(sfx_detect, "load_asset_audio", lambda *a, **k: np.ones(4000, np.float32))
+    sr = sfx_detect.DETECT_SR
+    rng = np.random.default_rng(3)
+    ts = np.arange(int(0.4 * sr)) / sr
+    pop = (0.5 * np.sin(2 * np.pi * (500 + 1500 * ts) * ts) * np.exp(-4 * ts)).astype(np.float32)
+    signal = (0.01 * rng.standard_normal(120 * sr)).astype(np.float32)
+    for k in range(30):  # 15 fois par minute : ce son « colle » partout
+        i = int((2 + 3.9 * k) * sr)
+        signal[i : i + len(pop)] += pop
+    monkeypatch.setattr(sfx_detect, "load_asset_audio", lambda *a, **k: pop)
 
     class Lib:
         def of_kind(self, kind):
-            return [{"id": "sfx/pop", "name": "pop", "kind": "sfx", "duration": 0.5}] if kind == "sfx" else []
+            return [{"id": "sfx/pop", "name": "pop", "kind": "sfx", "duration": 0.4}] if kind == "sfx" else []
 
         def path_of(self, asset):
             return tmp_path / "pop.wav"
 
-    result = sfx_detect.detect_library_sounds(np.zeros(30 * 60 * 16000 // 50, np.float32).repeat(50), Lib(), tmp_path)
-    assert result["unreliable"] == ["sfx/pop"] and result["hits"] == []
+    result = sfx_detect.detect_library_sounds(signal, Lib(), tmp_path)
+    assert result["unreliable"] == ["sfx/pop"] and result["hits"] == [] and result["tested"] == 1
 
 
 def test_guide_precedence_and_corrupt_guide(workspace, library_dir, published, monkeypatch):

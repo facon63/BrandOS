@@ -24,14 +24,14 @@ from typing import Callable
 import numpy as np
 from pydantic import BaseModel, Field
 
-from .audio import Levels, level_curve, read_pcm
+from .audio import Levels, level_curve
 from .config import AppConfig, channel_bible, workspace_dir
 from .ffmpeg_utils import extract_frame, extract_pcm, probe, run_ffmpeg
 from .library import Library
 from .llm import BOOL, LLM, NUM, STR, arr, claude_available, obj
 from .project import slugify
 from .prompts import GUIDE_INSTRUCTIONS, REFERENCE_ANALYSIS_INSTRUCTIONS, REFERENCE_SYSTEM
-from .sfx_detect import detect_library_sounds
+from .sfx_detect import detect_library_sounds, load_detect_signal
 from .steps import StepDoc, StepRunner, StepStatus
 from .transcribe import build_lines, fmt_time, transcribe_mix
 
@@ -46,6 +46,7 @@ REF_STEPS: list[tuple[str, str]] = [
 ]
 REF_STEP_IDS = [s for s, _ in REF_STEPS]
 MAX_REFERENCE_MINUTES = 60  # au-delà, c'est sûrement un rush, pas une vidéo montée
+EMPTY_SFX = {"hits": [], "music": [], "skipped": 0, "unreliable": [], "too_short": [], "tested": 0}
 MAX_FRAMES_FOR_CLAUDE = 24
 PROMPT_BLOCK_MAX_CHARS = 12000
 
@@ -442,14 +443,14 @@ class ReferenceAnalyzer(StepRunner):
         library = Library.load(self.cfg.library_dir) if self.cfg.library_dir else Library(Path("."), [])
         unchecked = {"sfx_checked": False, "sfx_hits": 0, "sfx_per_min": 0.0, "sfx_top": [], "music_used": []}
         if not library.of_kind("sfx", "music"):
-            self.doc.write_json("bruitages.json", {"hits": [], "music": [], "skipped": 0, "unreliable": []})
+            self.doc.write_json("bruitages.json", EMPTY_SFX)
             self.doc.set_metrics(**unchecked)
             return "Bibliothèque vide : rien à reconnaître (ajoute-la puis clique sur Réanalyser)"
         if self.duration > MAX_REFERENCE_MINUTES * 60:
-            self.doc.write_json("bruitages.json", {"hits": [], "music": [], "skipped": 0, "unreliable": []})
+            self.doc.write_json("bruitages.json", EMPTY_SFX)
             self.doc.set_metrics(**unchecked)
             return "Vidéo trop longue : étape sautée"
-        signal = read_pcm(self.pcm, 0, self.duration)
+        signal = load_detect_signal(self.pcm, self.doc.root / "audio8k.pcm")
         result = detect_library_sounds(
             signal,
             library,
@@ -467,8 +468,15 @@ class ReferenceAnalyzer(StepRunner):
             music_used=[m["asset"] for m in result["music"]],
         )
         extra = f", {len(result['music'])} musique(s)" if result["music"] else ""
+        notes = []
+        if result["unreliable"]:
+            notes.append(f"{len(result['unreliable'])} son(s) ignoré(s) car ils ressemblent à tout")
+        if result["too_short"]:
+            notes.append(f"{len(result['too_short'])} son(s) trop bref(s) ou muet(s) pour être reconnus")
         if result["skipped"]:
-            extra += f" ({result['skipped']} sons non testés : bibliothèque très grande)"
+            notes.append(f"{result['skipped']} son(s) non testé(s) : bibliothèque très grande")
+        if notes:
+            extra += " — " + " ; ".join(notes)
         return f"{len(result['hits'])} bruitages reconnus{extra}"
 
     def step_frames(self) -> str:
