@@ -8,52 +8,74 @@ import shutil
 import subprocess
 import threading
 from dataclasses import dataclass
+from typing import Literal
 
 from .config import AppConfig
 from .pipeline import Pipeline
 from .project import Project
+from .references import ReferenceAnalyzer, ReferenceStore, build_guide
+
+JobKind = Literal["project", "reference", "guide"]
+GUIDE_TARGET = "guide"
 
 
 @dataclass
 class Job:
-    project_id: str
+    target: str
     from_step: str | None = None
     until: str | None = None
+    kind: JobKind = "project"
 
 
 class JobManager:
-    def __init__(self):
+    def __init__(self, start: bool = True):
         self._queue: "queue.Queue[Job]" = queue.Queue()
         self._lock = threading.Lock()
         self.current: Job | None = None
         self.pending: list[Job] = []
         self._cancel = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="krokcut-jobs")
-        self._thread.start()
+        if start:
+            self._thread.start()
 
-    def submit(self, project_id: str, from_step: str | None = None, until: str | None = None) -> None:
+    def submit(self, target: str, from_step: str | None = None, until: str | None = None, kind: JobKind = "project") -> None:
         with self._lock:
-            if any(j.project_id == project_id for j in self.pending) or (
-                self.current and self.current.project_id == project_id
-            ):
-                raise RuntimeError("Ce projet est déjà en cours de traitement.")
-            job = Job(project_id, from_step, until)
+            if self._busy_locked(target, kind):
+                raise RuntimeError("Déjà en cours de traitement.")
+            job = Job(target, from_step, until, kind)
             self.pending.append(job)
         self._queue.put(job)
 
-    def cancel(self, project_id: str) -> None:
+    def submit_guide(self) -> bool:
+        """Reconstruit le guide de style, sauf s'il est déjà prévu (évite de le refaire 5 fois de suite)."""
         with self._lock:
-            self.pending = [j for j in self.pending if j.project_id != project_id]
-            if self.current and self.current.project_id == project_id:
+            if any(j.kind == "guide" for j in self.pending):
+                return False
+            job = Job(GUIDE_TARGET, kind="guide")
+            self.pending.append(job)
+        self._queue.put(job)
+        return True
+
+    def cancel(self, target: str, kind: JobKind = "project") -> None:
+        with self._lock:
+            self.pending = [j for j in self.pending if not (j.target == target and j.kind == kind)]
+            if self.current and self.current.target == target and self.current.kind == kind:
                 self._cancel.set()
 
-    def busy(self, project_id: str) -> str | None:
-        with self._lock:
-            if self.current and self.current.project_id == project_id:
-                return "running"
-            if any(j.project_id == project_id for j in self.pending):
-                return "queued"
+    def _busy_locked(self, target: str, kind: JobKind) -> str | None:
+        if self.current and self.current.target == target and self.current.kind == kind:
+            return "running"
+        if any(j.target == target and j.kind == kind for j in self.pending):
+            return "queued"
         return None
+
+    def busy(self, target: str, kind: JobKind = "project") -> str | None:
+        with self._lock:
+            return self._busy_locked(target, kind)
+
+    def any_busy(self, kind: JobKind) -> bool:
+        with self._lock:
+            return bool((self.current and self.current.kind == kind) or any(j.kind == kind for j in self.pending))
 
     def _loop(self) -> None:
         while True:
@@ -66,20 +88,42 @@ class JobManager:
                 self._cancel.clear()
             awake = _keep_awake()
             try:
-                project = Project.open(job.project_id)
-                Pipeline(project, AppConfig.load(), cancel_event=self._cancel).run(job.from_step, job.until)
-            except Exception as exc:  # le pipeline gère ses erreurs ; ici seulement l'imprévu
-                try:
-                    project = Project.open(job.project_id)
-                    project.state.last_error = str(exc)
-                    project.save()
-                except Exception:
-                    pass
+                self._run(job)
+            except Exception as exc:  # les traitements gèrent leurs erreurs ; ici seulement l'imprévu
+                _record_error(job, exc)
             finally:
                 if awake:
                     awake.terminate()
                 with self._lock:
                     self.current = None
+
+    def _run(self, job: Job) -> None:
+        cfg = AppConfig.load()
+        if job.kind == "project":
+            Pipeline(Project.open(job.target), cfg, cancel_event=self._cancel).run(job.from_step, job.until)
+        elif job.kind == "reference":
+            store = ReferenceStore()
+            ok = ReferenceAnalyzer(store.open(job.target), cfg, store, cancel_event=self._cancel).run(job.from_step)
+            if ok:
+                self.submit_guide()
+        elif job.kind == "guide":
+            store = ReferenceStore()
+            build_guide(store, cfg)
+
+
+def _record_error(job: Job, exc: Exception) -> None:
+    try:
+        if job.kind == "project":
+            doc = Project.open(job.target)
+        elif job.kind == "reference":
+            doc = ReferenceStore().open(job.target)
+        else:
+            (ReferenceStore().root / "guide_erreur.txt").write_text(str(exc), "utf-8")
+            return
+        doc.state.last_error = str(exc)
+        doc.save()
+    except Exception:
+        pass
 
 
 def _keep_awake() -> subprocess.Popen | None:

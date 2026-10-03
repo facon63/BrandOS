@@ -140,3 +140,49 @@ Pour chaque moment tu as les lignes conservées, avec qui parle.{frames_note}
 Effets déjà utilisés dans les extraits précédents (pour varier) : {used}
 
 {moments}"""
+
+
+# ------------------------------------------------------ vidéos de référence
+REFERENCE_SYSTEM = """Tu es le monteur attitré de la chaîne YouTube « Krok et Mil ». On te montre des vidéos que \
+l'équipe a déjà montées et publiées : tu les étudies pour comprendre précisément leur style de montage, afin de \
+pouvoir le reproduire sur de nouveaux rush. Sois concret et factuel : décris ce que tu observes, n'invente pas ce \
+que tu ne peux pas voir ni entendre, et signale quand une observation est incertaine."""
+
+REFERENCE_ANALYSIS_INSTRUCTIONS = """Vidéo publiée : « {name} » ({duration}).
+
+Mesures automatiques sur le fichier :
+{metrics}
+
+La transcription ci-dessous est celle de la vidéo FINALE : tout ce qui s'y trouve a été gardé au montage. \
+Les lignes « 🔊 » signalent un bruitage de la bibliothèque de la chaîne reconnu dans le son à cet instant \
+(les sons modifiés ou absents de la bibliothèque n'apparaissent pas). « (son fort sans parole …) » = rires, \
+bruitage, musique ou action. Les images jointes montrent la vidéo à intervalles réguliers (timecode indiqué) : \
+regarde les zooms, textes à l'écran, personnages ou memes incrustés, la façon dont les deux POV sont montrés.
+
+Analyse ce montage pour qu'un monteur puisse reproduire le style :
+- summary : de quoi parle la vidéo (2 à 3 phrases).
+- structure : comment elle est construite (accroche / teaser, intro, parties, fin) et son rythme.
+- humor : quels moments sont gardés, comment les blagues sont amenées et où elles sont coupées.
+- editing : ce que montrent les images (zooms, textes : style/couleur/position, persos et memes, POV, transitions).
+- sound_design : comment les bruitages sont utilisés (lesquels, sur quels types de phrases ou de réactions), musique.
+- rules : 5 à 12 règles concrètes et actionnables (« Après une vanne, … », « Jamais de … »).
+- examples : 3 à 8 moments représentatifs : timecode, phrase recopiée de la transcription, pourquoi il est \
+gardé, effets utilisés.
+- estimates : estimations par minute (zooms, textes, apparitions de persos/memes), musique de fond (oui/non), \
+teaser d'ouverture (oui/non). Mets 0 si tu ne peux pas estimer.
+{library_note}
+TRANSCRIPTION DE LA VIDÉO FINALE :
+{timeline}"""
+
+GUIDE_INSTRUCTIONS = """Voici l'analyse de {count} vidéo(s) déjà montée(s) et publiée(s) par la chaîne, avec les \
+mesures automatiques de chacune.
+
+Rédige le guide de style que suivra le monteur automatique sur les prochains épisodes :
+- guide : en markdown, 300 à 700 mots, avec ces sections : « Format et rythme », « Ce qu'on garde », \
+« Comment on monte » (zooms, textes, persos, POV), « Sound design », « Règles d'or ». Garde ce qui revient \
+d'une vidéo à l'autre ou qui est clairement voulu ; signale les vraies différences entre vidéos. Écris des \
+consignes directement applicables, pas une description.
+- examples : 6 à 12 moments gardés parmi les plus parlants, avec la vidéo d'origine.
+- estimates : valeurs moyennes réalistes pour régler le monteur (0 si inconnu).
+
+{analyses}"""

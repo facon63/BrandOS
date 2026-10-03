@@ -23,6 +23,7 @@ from .jobs import JobManager
 from .library import Library
 from .llm import claude_available
 from .project import STEPS, Project
+from .references import REF_STEP_IDS, REF_STEPS, ReferenceDoc, ReferenceStore
 
 WEB = Path(__file__).parent / "web"
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm", ".mts", ".ts", ".flv"}
@@ -31,6 +32,8 @@ VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm", ".mts", ".ts", ".f
 async def lifespan(_app: FastAPI):
     for project in Project.list():  # un traitement coupé par une fermeture de l'app reprendra proprement
         project.recover_interrupted()
+    for ref in ReferenceStore().list():
+        ref.recover_interrupted()
     yield
 
 
@@ -166,14 +169,21 @@ def browse(path: str = ""):
 
 
 @app.put("/api/upload/{filename}")
-async def upload(filename: str, request: Request):
+async def upload(filename: str, request: Request, folder: str = "rush"):
     """Reçoit un fichier en flux continu (pas de double copie sur le disque)."""
     safe = Path(filename).name
-    if not safe:
+    if not safe or safe.startswith("."):
         raise HTTPException(400, "Nom de fichier invalide")
-    dest_dir = workspace_dir() / "rush"
-    dest_dir.mkdir(exist_ok=True)
+    if folder == "references":
+        dest_dir = ReferenceStore().files_dir
+    else:
+        dest_dir = workspace_dir() / "rush"
+        dest_dir.mkdir(exist_ok=True)
     dest = dest_dir / safe
+    n = 2
+    while dest.exists():  # ne jamais écraser un fichier déjà utilisé par un épisode
+        dest = dest_dir / f"{Path(safe).stem}-{n}{Path(safe).suffix}"
+        n += 1
     tmp = dest.with_suffix(dest.suffix + ".part")
     with open(tmp, "wb") as fh:
         async for chunk in request.stream():
@@ -401,6 +411,129 @@ def library_file(id: str):
     if not asset:
         raise HTTPException(404)
     return FileResponse(lib.path_of(asset))
+
+
+# ------------------------------------------------------- vidéos de référence
+def _reference_summary(doc: ReferenceDoc) -> dict:
+    state = doc.state
+    analysis = doc.read_json("analyse.json")
+    return {
+        "id": state.id,
+        "name": state.name,
+        "path": state.path,
+        "added": state.added,
+        "steps": [{"id": sid, "label": label, **state.steps[sid].model_dump()} for sid, label in REF_STEPS],
+        "metrics": state.metrics,
+        "busy": jobs.busy(state.id, "reference"),
+        "last_error": state.last_error,
+        "analysis_source": analysis.get("source") if analysis else None,
+        "has_thumb": (doc.root / "vignette.jpg").exists(),
+    }
+
+
+@app.get("/api/references")
+def list_references():
+    store = ReferenceStore()
+    error_file = store.root / "guide_erreur.txt"
+    return {
+        "references": [_reference_summary(d) for d in store.list()],
+        "guide": store.guide(),
+        "guide_busy": jobs.any_busy("guide"),
+        "guide_error": error_file.read_text("utf-8") if error_file.exists() else "",
+        "claude": claude_available(AppConfig.load()),
+    }
+
+
+class AddReferences(BaseModel):
+    paths: list[str]
+
+
+@app.post("/api/references")
+def add_references(data: AddReferences):
+    store = ReferenceStore()
+    added = []
+    for path in data.paths:
+        if not Path(path).is_file():
+            raise HTTPException(400, f"Fichier introuvable : {path}")
+    for path in data.paths:
+        doc = store.add(path)
+        if doc.state.steps["analyze"].status != "done" and not jobs.busy(doc.id, "reference"):
+            jobs.submit(doc.id, kind="reference")
+        added.append(_reference_summary(doc))
+    return {"added": added}
+
+
+def _reference(ref_id: str) -> ReferenceDoc:
+    try:
+        return ReferenceStore().open(ref_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.get("/api/references/{ref_id}")
+def get_reference(ref_id: str):
+    doc = _reference(ref_id)
+    return {
+        **_reference_summary(doc),
+        "analysis": doc.read_json("analyse.json"),
+        "log": doc.log_tail(30),
+    }
+
+
+@app.post("/api/references/{ref_id}/run")
+def rerun_reference(ref_id: str, data: dict | None = None):
+    doc = _reference(ref_id)
+    from_step = (data or {}).get("from_step") or "sfx"  # par défaut : bibliothèque et style
+    if from_step not in REF_STEP_IDS:
+        raise HTTPException(400, "Étape inconnue")
+    try:
+        jobs.submit(doc.id, from_step=from_step, kind="reference")
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return _reference_summary(doc)
+
+
+@app.delete("/api/references/{ref_id}")
+def delete_reference(ref_id: str):
+    doc = _reference(ref_id)
+    if jobs.busy(doc.id, "reference") == "running":
+        raise HTTPException(409, "Analyse en cours : annule-la d'abord.")
+    jobs.cancel(doc.id, "reference")
+    ReferenceStore().remove(doc.id)
+    jobs.submit_guide()
+    return {"ok": True}
+
+
+@app.post("/api/references/{ref_id}/cancel")
+def cancel_reference(ref_id: str):
+    jobs.cancel(_reference(ref_id).id, "reference")
+    return {"ok": True}
+
+
+@app.get("/api/references/{ref_id}/thumb")
+def reference_thumb(ref_id: str):
+    path = _reference(ref_id).root / "vignette.jpg"
+    if not path.exists():
+        raise HTTPException(404)
+    return FileResponse(path, media_type="image/jpeg")
+
+
+@app.post("/api/guide/rebuild")
+def rebuild_guide():
+    jobs.submit_guide()
+    return {"ok": True}
+
+
+@app.post("/api/guide/apply")
+def apply_guide_style():
+    """Reporte les réglages suggérés par les vidéos publiées dans le style par défaut."""
+    guide = ReferenceStore().guide()
+    values = ((guide or {}).get("suggested") or {}).get("values") or {}
+    if not values:
+        raise HTTPException(400, "Aucun réglage suggéré pour l'instant.")
+    style = StyleProfile.model_validate({**StyleProfile.load().model_dump(), **values})
+    style.save(StyleProfile.default_path())
+    return style.model_dump()
 
 
 @app.post("/api/quit")

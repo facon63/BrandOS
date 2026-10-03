@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 import threading
-import time
-import traceback
 from pathlib import Path
 from typing import Callable
 
@@ -19,16 +17,16 @@ from .library import Library
 from .llm import LLM, claude_available
 from .project import STEP_IDS, Project
 from .prompts import EDIT_SYSTEM_EXTRA, base_system
+from .references import ReferenceStore
 from .render import render
+from .steps import Cancelled, StepRunner
 from .timeline import Timeline, build_timeline
 from .transcribe import build_lines, transcribe_mix
 
 WordsProvider = Callable[[Path, audio_mod.Levels], list[dict]]
 
 
-class Cancelled(Exception):
-    pass
-
+__all__ = ["Cancelled", "Pipeline", "standard_fps"]
 
 STANDARD_FPS = (24000 / 1001, 24.0, 25.0, 30000 / 1001, 30.0, 50.0, 60000 / 1001, 60.0)
 
@@ -39,7 +37,9 @@ def standard_fps(fps: float) -> float:
     return best if abs(best - fps) / best < 0.02 else round(fps, 3)
 
 
-class Pipeline:
+class Pipeline(StepRunner):
+    step_ids = STEP_IDS
+
     def __init__(
         self,
         project: Project,
@@ -48,11 +48,10 @@ class Pipeline:
         words_provider: WordsProvider | None = None,
         cancel_event: threading.Event | None = None,
     ):
+        super().__init__(project, cancel_event)
         self.p = project
         self.cfg = cfg
         self.words_provider = words_provider
-        self.cancel = cancel_event or threading.Event()
-        self._last_save = 0.0
         self._llm: LLM | None = None
 
     # ------------------------------------------------------------ outils
@@ -68,14 +67,6 @@ class Pipeline:
             self._llm = LLM(self.cfg, cache_dir=self.p.work / "claude_cache", log=self.p.log)
         return self._llm
 
-    def progress(self, step: str, fraction: float, message: str = "") -> None:
-        if self.cancel.is_set():
-            raise Cancelled()
-        now = time.time()
-        if now - self._last_save > 0.7 or fraction >= 1.0:
-            self._last_save = now
-            self.p.set_step(step, progress=round(min(1.0, fraction), 4), message=message)
-
     def levels(self) -> audio_mod.Levels:
         return audio_mod.Levels.load(self.p.work / "niveaux.npz")
 
@@ -86,40 +77,15 @@ class Pipeline:
         return Library.load(self.cfg.library_dir) if self.cfg.library_dir else Library(Path("."), [])
 
     def reference_notes(self) -> str:
-        path = workspace_dir() / "references.md"
-        return path.read_text("utf-8") if path.exists() else ""
+        """Ce que l'équipe attend, appris des vidéos déjà montées (onglet « Mes vidéos »)."""
+        notes = ReferenceStore().prompt_block()
+        legacy = workspace_dir() / "references.md"  # ancienne analyse en ligne de commande
+        if legacy.exists():
+            notes = (notes + "\n\n" + legacy.read_text("utf-8")).strip()
+        return notes
 
     def system_prompt(self) -> str:
         return base_system(channel_bible(), self.p.style(), self.names, self.reference_notes())
-
-    # ------------------------------------------------------------ boucle
-    def run(self, from_step: str | None = None, until: str | None = None) -> bool:
-        if from_step:
-            self.p.invalidate_from(from_step)
-        last = STEP_IDS.index(until) if until else len(STEP_IDS) - 1
-        self.p.state.last_error = ""
-        self.p.save()
-        for i, step in enumerate(STEP_IDS):
-            if i > last:
-                break
-            if self.p.state.steps[step].status == "done":
-                continue
-            self.p.set_step(step, status="running", progress=0.0, message="")
-            self.p.log(f"▶ {step}")
-            try:
-                message = getattr(self, f"step_{step}")() or ""
-            except Cancelled:
-                self.p.set_step(step, status="pending", message="Annulé")
-                self.p.log("■ annulé")
-                return False
-            except Exception as exc:  # on remonte l'erreur dans l'interface
-                self.p.log(traceback.format_exc())
-                self.p.state.last_error = f"{step} : {exc}"
-                self.p.set_step(step, status="error", message=str(exc)[:500])
-                return False
-            self.p.set_step(step, status="done", progress=1.0, message=message)
-            self.p.log(f"✔ {step} {message}")
-        return True
 
     # ------------------------------------------------------------ étapes
     def step_probe(self) -> str:

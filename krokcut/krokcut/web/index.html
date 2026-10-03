@@ -12,6 +12,7 @@
     <div class="brand"><span class="logo">🐊</span> KrokCut <small>dérush &amp; montage auto · Krok et Mil</small></div>
     <nav>
       <button class="tab active" data-view="projects">Épisodes</button>
+      <button class="tab" data-view="references">Mes vidéos</button>
       <button class="tab" data-view="library">Bibliothèque</button>
       <button class="tab" data-view="settings">Réglages</button>
       <button class="tab quit" id="btn-quit" title="Fermer KrokCut">⏻ Quitter</button>
@@ -135,8 +136,52 @@
           <li>montage : coupes des blancs, changements de POV, zooms, bruitages, personnages, textes, musique,</li>
           <li>rendu MP4 + timeline XML à ouvrir dans Premiere Pro ou DaVinci Resolve pour les finitions.</li>
         </ol>
+        <p id="empty-refs" class="muted"></p>
         <p id="empty-claude" class="muted"></p>
       </div>
+    </section>
+  </main>
+
+  <!-- ========================================================== MES VIDÉOS -->
+  <main id="view-references" class="view hidden">
+    <section class="content full">
+      <div class="card">
+        <h2>Mes vidéos déjà montées</h2>
+        <p class="muted">Dépose ici des vidéos que vous avez déjà montées et publiées : c'est comme ça que KrokCut apprend ce que vous attendez. Il mesure le rythme des coupes et la durée, transcrit ce que vous avez gardé, reconnaît dans le son les bruitages de votre bibliothèque, et Claude regarde des images pour repérer zooms, textes, persos et memes. Il en tire un <b>guide de style</b> suivi à chaque nouveau dérush. 3 à 5 vidéos représentatives suffisent.</p>
+        <div class="dropzone" id="ref-drop">Glisse des vidéos montées ici<br><small>(copiées dans l'espace de travail)</small></div>
+        <div class="row wrap">
+          <button class="ghost small" id="ref-browse">📁 Choisir sur le disque (sans copie)</button>
+          <ul class="file-list grow" id="ref-uploads"></ul>
+        </div>
+        <p class="hint" id="ref-lib-hint"></p>
+      </div>
+
+      <div class="card hidden" id="guide-card">
+        <div class="row space">
+          <div>
+            <h2>Ce que KrokCut a retenu</h2>
+            <p class="muted" id="guide-meta"></p>
+          </div>
+          <button class="ghost" id="guide-rebuild">↻ Mettre à jour</button>
+        </div>
+        <div id="guide-error" class="error hidden"></div>
+        <div id="guide-text" class="guide"></div>
+        <details class="tools" id="guide-examples-box">
+          <summary>Exemples de moments gardés</summary>
+          <ul id="guide-examples" class="examples"></ul>
+        </details>
+        <div id="guide-suggest-box">
+          <h3>Réglages de montage suggérés</h3>
+          <table class="assets suggest">
+            <thead><tr><th>Réglage</th><th>Actuel</th><th>Suggéré</th><th>D'où ça vient</th></tr></thead>
+            <tbody id="guide-suggest"></tbody>
+          </table>
+          <div class="row end"><button class="primary" id="guide-apply">Appliquer au style par défaut</button></div>
+        </div>
+        <p class="hint">Le guide est réécrit à chaque vidéo ajoutée ou retirée. Pour corriger une règle, écris la bonne dans la bible de la chaîne (Réglages) : elle passe avant le guide.</p>
+      </div>
+
+      <ul id="ref-list" class="refs"></ul>
     </section>
   </main>
 

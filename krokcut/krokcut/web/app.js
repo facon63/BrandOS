@@ -36,7 +36,7 @@ function toast(msg, isError = false) {
 
 /* ------------------------------------------------------------------ onglets */
 $("#btn-quit").addEventListener("click", async () => {
-  const running = state.projects.some((p) => p.busy);
+  const running = state.projects.some((p) => p.busy) || state.refsBusy;
   const msg = running
     ? "Un traitement est en cours : il sera interrompu (tu pourras le reprendre avec « Continuer »). Quitter KrokCut ?"
     : "Quitter KrokCut ?";
@@ -51,6 +51,7 @@ $$(".tab[data-view]").forEach((tab) =>
     $$(".view").forEach((v) => v.classList.toggle("hidden", v.id !== `view-${tab.dataset.view}`));
     if (tab.dataset.view === "library") loadLibrary();
     if (tab.dataset.view === "settings") loadSettings();
+    if (tab.dataset.view === "references") loadReferences();
   })
 );
 
@@ -108,33 +109,31 @@ function renderFiles() {
   );
 }
 
-function uploadFile(file, pov) {
-  const entry = { name: file.name, progress: 0 };
-  state.files[pov].push(entry);
-  renderFiles();
+/** Envoie un fichier au serveur en flux ; renvoie le chemin où il a été enregistré. */
+function putFile(file, folder, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("PUT", `/api/upload/${encodeURIComponent(file.name)}`);
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) {
-        entry.progress = e.loaded / e.total;
-        renderFiles();
-      }
-    };
+    xhr.open("PUT", `/api/upload/${encodeURIComponent(file.name)}?folder=${folder}`);
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
     xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        entry.path = JSON.parse(xhr.responseText).path;
-        entry.progress = 1;
-        renderFiles();
-        resolve();
-      } else reject(new Error(xhr.responseText));
+      if (xhr.status >= 200 && xhr.status < 300) resolve(JSON.parse(xhr.responseText).path);
+      else reject(new Error(xhr.responseText));
     };
     xhr.onerror = () => reject(new Error("Échec de l'envoi"));
     xhr.send(file);
   });
 }
 
-$$(".dropzone").forEach((zone) => {
+async function uploadFile(file, pov) {
+  const entry = { name: file.name, progress: 0 };
+  state.files[pov].push(entry);
+  renderFiles();
+  entry.path = await putFile(file, "rush", (p) => { entry.progress = p; renderFiles(); });
+  entry.progress = 1;
+  renderFiles();
+}
+
+$$(".dropzone[data-pov]").forEach((zone) => {
   zone.addEventListener("dragover", (e) => { e.preventDefault(); zone.classList.add("over"); });
   zone.addEventListener("dragleave", () => zone.classList.remove("over"));
   zone.addEventListener("drop", async (e) => {
@@ -170,7 +169,14 @@ $("#np-start").addEventListener("click", async () => {
 });
 
 /* ------------------------------------------------------------- explorateur */
-let browsePov = "a";
+let onBrowsePick = null;
+function openBrowser(onPick) {
+  onBrowsePick = onPick;
+  $("#browser").showModal();
+  let last = "";
+  try { last = localStorage.getItem("krokcut-last-dir") || ""; } catch (_) { /* stockage indisponible */ }
+  browseTo(last);
+}
 async function browseTo(path) {
   try {
     const data = await api(`/api/browse?path=${encodeURIComponent(path || "")}`);
@@ -198,19 +204,19 @@ async function browseTo(path) {
   }
 }
 $$("[data-browse]").forEach((b) =>
-  b.addEventListener("click", () => {
-    browsePov = b.dataset.browse;
-    $("#browser").showModal();
-    browseTo(localStorage.getItem("krokcut-last-dir") || "");
-  })
+  b.addEventListener("click", () =>
+    openBrowser((paths) => {
+      paths.forEach((p) => state.files[b.dataset.browse].push({ name: p, path: p }));
+      renderFiles();
+    })
+  )
 );
 $("#br-go").addEventListener("click", () => browseTo($("#br-path").value));
 $("#br-add").addEventListener("click", () => {
   const picked = $$("#br-list input:checked").map((i) => i.value);
-  picked.forEach((p) => state.files[browsePov].push({ name: p, path: p }));
   try { localStorage.setItem("krokcut-last-dir", $("#br-path").value); } catch (_) { /* stockage indisponible */ }
-  renderFiles();
   $("#browser").close();
+  if (onBrowsePick && picked.length) onBrowsePick(picked);
 });
 
 /* ---------------------------------------------------------------- détail */
@@ -590,5 +596,236 @@ async function checkClaude() {
     : "⚠️ Aucune clé Claude configurée : ajoute-la dans Réglages, sinon le dérush se fera en mode hors ligne (pics sonores uniquement).";
 }
 
+async function checkReferences() {
+  try {
+    const data = await api("/api/references");
+    const n = data.references.length;
+    $("#empty-refs").textContent = n
+      ? `🎓 ${n} vidéo${n > 1 ? "s" : ""} déjà montée${n > 1 ? "s" : ""} prise${n > 1 ? "s" : ""} en compte pour comprendre votre style.`
+      : "🎓 Astuce : dépose 3 à 5 de vos vidéos déjà montées dans l'onglet « Mes vidéos » pour que KrokCut apprenne votre style.";
+  } catch (_) { /* pas grave */ }
+}
+
 checkClaude();
+checkReferences();
 loadProjects();
+
+/* ------------------------------------------------------------- mes vidéos */
+const REF_ICONS = { pending: "○", running: "⏳", done: "✅", error: "❌", skipped: "⏭️" };
+const SUGGEST_LABELS = {
+  target_min_minutes: "Durée min (min)", target_max_minutes: "Durée max (min)", sfx_per_minute: "Bruitages / minute",
+  zooms_per_minute: "Zooms / minute", texts_per_minute: "Textes / minute", characters_per_minute: "Persos / minute",
+  music: "Musique de fond", cold_open: "Teaser d'ouverture",
+};
+state.refOpen = new Set();
+state.refUploads = [];
+
+/** Markdown minimal (titres, listes, gras) — le texte est échappé avant. */
+function miniMarkdown(md) {
+  const out = [];
+  let inList = false;
+  for (const raw of String(md || "").split("\n")) {
+    let line = esc(raw.trim()).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+    const item = /^[-*] (.*)/.exec(line);
+    if (item) {
+      if (!inList) { out.push("<ul>"); inList = true; }
+      out.push(`<li>${item[1]}</li>`);
+      continue;
+    }
+    if (inList) { out.push("</ul>"); inList = false; }
+    const heading = /^(#{1,4}) (.*)/.exec(line);
+    if (heading) out.push(`<h${Math.min(4, heading[1].length + 2)}>${heading[2]}</h${Math.min(4, heading[1].length + 2)}>`);
+    else if (line) out.push(`<p>${line}</p>`);
+  }
+  if (inList) out.push("</ul>");
+  return out.join("");
+}
+
+function refMetrics(m) {
+  const parts = [];
+  if (m.duration_min) parts.push(`${m.duration_min} min`);
+  if (m.cuts_per_min !== undefined) parts.push(`${m.cuts_per_min} plans/min`);
+  if (m.median_shot) parts.push(`plan médian ${m.median_shot} s`);
+  if (m.sfx_checked) parts.push(`${m.sfx_hits || 0} bruitages reconnus`);
+  if (m.speech_ratio !== undefined) parts.push(`parole ${Math.round(m.speech_ratio * 100)} %`);
+  return parts.join(" · ");
+}
+
+async function loadReferences() {
+  let data;
+  try { data = await api("/api/references"); } catch (err) { return toast(err.message, true); }
+  state.refsBusy = data.references.some((r) => r.busy) || data.guide_busy;
+  renderReferences(data);
+  clearTimeout(state.refTimer);
+  if (state.refsBusy && !$("#view-references").classList.contains("hidden")) state.refTimer = setTimeout(loadReferences, 2000);
+}
+
+function renderReferences(data) {
+  // vidéos
+  $("#ref-list").innerHTML = data.references
+    .slice()
+    .reverse()
+    .map((r) => {
+      const running = r.steps.find((s) => s.status === "running");
+      const failed = r.steps.find((s) => s.status === "error");
+      const done = r.steps.every((s) => s.status === "done");
+      const halted = !running && !failed && !r.busy ? r.steps.find((s) => s.status === "pending" && s.message) : null;
+      const status = r.busy === "queued" ? "en file d'attente" : running ? running.label : failed ? "erreur" : done ? "analysée" : "en attente";
+      const thumb = r.has_thumb
+        ? `<img class="ref-thumb" loading="lazy" src="/api/references/${encodeURIComponent(r.id)}/thumb" alt="">`
+        : `<div class="ref-thumb empty">🎞️</div>`;
+      return `<li class="ref" data-id="${esc(r.id)}">
+        ${thumb}
+        <div class="ref-body">
+          <div class="row space"><b>${esc(r.name)}</b><span class="pill ${failed ? "bad" : ""}">${esc(status)}</span></div>
+          <div class="meta">${esc(refMetrics(r.metrics)) || "&nbsp;"}</div>
+          ${running ? `<div class="msg">${esc(running.message || "")}</div><div class="bar"><i style="width:${Math.round(running.progress * 100)}%"></i></div>` : ""}
+          ${failed ? `<div class="error">${esc(failed.label)} : ${esc(failed.message)}</div>` : ""}
+          ${halted ? `<div class="msg">⏸ ${esc(halted.label)} : ${esc(halted.message)}</div>` : ""}
+          ${r.steps.filter((s) => s.status === "done" && s.message).map((s) => `<div class="msg">${REF_ICONS.done} ${esc(s.label)} : ${esc(s.message)}</div>`).join("")}
+          <div class="row wrap">
+            ${r.analysis_source ? `<button class="ghost small" data-ref-details="${esc(r.id)}">${state.refOpen.has(r.id) ? "Masquer l'analyse" : "Voir l'analyse"}</button>` : ""}
+            ${r.busy ? `<button class="ghost small" data-ref-cancel="${esc(r.id)}">Annuler</button>` : (done
+              ? `<button class="ghost small" data-ref-rerun="${esc(r.id)}" title="Refait la recherche des bruitages et l'analyse du style">Réanalyser</button>`
+              : `<button class="ghost small" data-ref-rerun="${esc(r.id)}">Reprendre l'analyse</button>`)}
+            <button class="ghost small" data-ref-delete="${esc(r.id)}">Retirer</button>
+          </div>
+          <div class="ref-details ${state.refOpen.has(r.id) ? "" : "hidden"}" id="ref-details-${esc(r.id)}"></div>
+        </div>
+      </li>`;
+    })
+    .join("") || "";
+  state.refOpen.forEach((id) => { if (data.references.some((r) => r.id === id)) loadRefDetails(id); });
+
+  $$("[data-ref-details]").forEach((b) => b.addEventListener("click", () => {
+    const id = b.dataset.refDetails;
+    if (state.refOpen.has(id)) state.refOpen.delete(id); else state.refOpen.add(id);
+    renderReferences(data);
+  }));
+  $$("[data-ref-rerun]").forEach((b) => b.addEventListener("click", async () => {
+    try { await api(`/api/references/${encodeURIComponent(b.dataset.refRerun)}/run`, { method: "POST", body: {} }); loadReferences(); }
+    catch (err) { toast(err.message, true); }
+  }));
+  $$("[data-ref-cancel]").forEach((b) => b.addEventListener("click", async () => {
+    await api(`/api/references/${encodeURIComponent(b.dataset.refCancel)}/cancel`, { method: "POST" });
+    loadReferences();
+  }));
+  $$("[data-ref-delete]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm("Retirer cette vidéo ? Le guide de style sera recalculé sans elle.")) return;
+    try { await api(`/api/references/${encodeURIComponent(b.dataset.refDelete)}`, { method: "DELETE" }); loadReferences(); }
+    catch (err) { toast(err.message, true); }
+  }));
+
+  // guide
+  const g = data.guide;
+  $("#guide-card").classList.toggle("hidden", !g && !data.guide_busy && !data.guide_error);
+  $("#guide-error").classList.toggle("hidden", !data.guide_error);
+  $("#guide-error").textContent = data.guide_error ? `La mise à jour du guide a échoué : ${data.guide_error}` : "";
+  const n = g ? g.sources.length : 0;
+  $("#guide-meta").textContent = data.guide_busy
+    ? "Mise à jour du guide en cours…"
+    : g
+      ? `Tiré de ${n} vidéo${n > 1 ? "s" : ""} · ${g.source === "claude" ? "rédigé par Claude" : "mesures seules (ajoute une clé Claude pour un vrai guide)"} · mis à jour le ${new Date(g.updated).toLocaleString("fr-FR")}`
+      : "";
+  $("#guide-rebuild").disabled = data.guide_busy;
+  $("#guide-text").innerHTML = g ? miniMarkdown(g.text) : "";
+  const examples = (g && g.examples) || [];
+  $("#guide-examples-box").classList.toggle("hidden", !examples.length);
+  $("#guide-examples").innerHTML = examples
+    .map((e) => `<li><span class="badge">${esc(e.video || "")} ${esc(e.time || "")}</span> « ${esc(e.quote)} » <span class="muted">— ${esc(e.why_kept)}${e.effects ? ` · ${esc(e.effects)}` : ""}</span></li>`)
+    .join("");
+  const suggested = (g && g.suggested) || { values: {}, sources: {} };
+  const keys = Object.keys(suggested.values || {});
+  $("#guide-suggest-box").classList.toggle("hidden", !keys.length);
+  if (keys.length) {
+    api("/api/style").then((current) => {
+      const show = (v) => (typeof v === "boolean" ? (v ? "oui" : "non") : v);
+      $("#guide-suggest").innerHTML = keys
+        .map((k) => `<tr><td>${esc(SUGGEST_LABELS[k] || k)}</td><td>${esc(show(current[k]))}</td><td><b>${esc(show(suggested.values[k]))}</b></td><td class="muted">${esc(suggested.sources[k] || "")}</td></tr>`)
+        .join("");
+    });
+  }
+  $("#ref-lib-hint").textContent = data.claude
+    ? "Les bruitages ne sont reconnus que s'ils sont dans la bibliothèque (onglet Bibliothèque)."
+    : "⚠️ Sans clé Claude (Réglages), KrokCut ne tirera que des mesures de ces vidéos (rythme, bruitages), pas le style.";
+}
+
+async function loadRefDetails(id) {
+  const box = $(`#ref-details-${CSS.escape(id)}`);
+  if (!box) return;
+  let r;
+  try { r = await api(`/api/references/${encodeURIComponent(id)}`); } catch (_) { return; }
+  const a = r.analysis;
+  if (!a) { box.innerHTML = "<p class='muted'>Pas encore d'analyse.</p>"; return; }
+  const section = (title, text) => (text ? `<h4>${title}</h4><p>${esc(text)}</p>` : "");
+  const top = (r.metrics.sfx_top || []).map(([asset, count]) => `<span class="badge">${esc(asset)} ×${count}</span>`).join(" ");
+  box.innerHTML = [
+    section("Résumé", a.summary),
+    section("Structure", a.structure),
+    section("Ce qui est gardé", a.humor),
+    section("Montage à l'image", a.editing),
+    section("Sound design", a.sound_design),
+    top ? `<h4>Bruitages reconnus</h4><p>${top}</p>` : "",
+    a.rules && a.rules.length ? `<h4>Règles</h4><ul>${a.rules.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : "",
+    a.examples && a.examples.length
+      ? `<h4>Moments représentatifs</h4><ul>${a.examples.map((e) => `<li><span class="badge">${esc(e.time)}</span> « ${esc(e.quote)} » <span class="muted">— ${esc(e.why_kept)}${e.effects ? ` · ${esc(e.effects)}` : ""}</span></li>`).join("")}</ul>`
+      : "",
+  ].join("") || "<p class='muted'>Analyse vide.</p>";
+}
+
+async function addReferencePaths(paths) {
+  if (!paths.length) return;
+  try {
+    await api("/api/references", { method: "POST", body: { paths } });
+    toast(`${paths.length} vidéo${paths.length > 1 ? "s" : ""} ajoutée${paths.length > 1 ? "s" : ""} : analyse lancée.`);
+  } catch (err) {
+    toast(err.message, true);
+  }
+  loadReferences();
+  checkReferences();
+}
+
+function renderRefUploads() {
+  $("#ref-uploads").innerHTML = state.refUploads
+    .filter((u) => u.progress < 1)
+    .map((u) => `<li><span>${esc(u.name)}</span><span class="progress">${Math.round(u.progress * 100)} %</span></li>`)
+    .join("");
+}
+
+const refDrop = $("#ref-drop");
+refDrop.addEventListener("dragover", (e) => { e.preventDefault(); refDrop.classList.add("over"); });
+refDrop.addEventListener("dragleave", () => refDrop.classList.remove("over"));
+refDrop.addEventListener("drop", async (e) => {
+  e.preventDefault();
+  refDrop.classList.remove("over");
+  for (const file of e.dataTransfer.files) {
+    const entry = { name: file.name, progress: 0 };
+    state.refUploads.push(entry);
+    renderRefUploads();
+    try {
+      const path = await putFile(file, "references", (p) => { entry.progress = p; renderRefUploads(); });
+      entry.progress = 1;
+      renderRefUploads();
+      await addReferencePaths([path]);
+    } catch (err) {
+      entry.progress = 1;
+      renderRefUploads();
+      toast(`Envoi impossible : ${err.message}`, true);
+    }
+  }
+});
+$("#ref-browse").addEventListener("click", () => openBrowser(addReferencePaths));
+$("#guide-rebuild").addEventListener("click", async () => {
+  await api("/api/guide/rebuild", { method: "POST" });
+  loadReferences();
+});
+$("#guide-apply").addEventListener("click", async () => {
+  if (!confirm("Remplacer ces réglages du style par défaut (utilisé pour les nouveaux épisodes) ?")) return;
+  try {
+    await api("/api/guide/apply", { method: "POST" });
+    toast("Style par défaut mis à jour : il s'appliquera aux prochains épisodes.");
+    loadReferences();
+  } catch (err) {
+    toast(err.message, true);
+  }
+});

@@ -58,6 +58,8 @@ class AppConfig(BaseModel):
     whisper: WhisperSettings = Field(default_factory=WhisperSettings)
     render: RenderSettings = Field(default_factory=RenderSettings)
     llm_parallel_requests: int = 4
+    # Les vidéos de référence servent à apprendre le style : un modèle plus léger suffit et va bien plus vite
+    references_whisper_model: str = "small"
 
     @classmethod
     def path(cls) -> Path:

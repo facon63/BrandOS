@@ -80,10 +80,23 @@ def cmd_library(args) -> None:
 
 
 def cmd_style(args) -> None:
-    from .style_analysis import analyze_references
+    """Ajoute des vidéos déjà montées, les analyse et met à jour le guide de style."""
+    from .references import REF_STEP_IDS, ReferenceAnalyzer, ReferenceStore, build_guide
 
-    text = analyze_references(args.videos)
-    print(text)
+    cfg = AppConfig.load()
+    store = ReferenceStore()
+    for video in args.videos:
+        doc = store.add(video)
+        print(f"Analyse de {doc.state.name}…")
+        ok = ReferenceAnalyzer(doc, cfg, store).run()
+        doc.reload()
+        for step in REF_STEP_IDS:
+            st = doc.state.steps[step]
+            print(f"  {'✔' if st.status == 'done' else '✖' if st.status == 'error' else '·'} {step:<11} {st.message}")
+        if not ok:
+            print(f"  Erreur : {doc.state.last_error}")
+    build_guide(store, cfg)
+    print("\n" + (store.guide_md.read_text("utf-8") if store.guide_md.exists() else "(pas de guide)"))
 
 
 def main(argv=None) -> None:
@@ -116,7 +129,7 @@ def main(argv=None) -> None:
     lib.add_argument("dir")
     lib.set_defaults(func=cmd_library)
 
-    st = sub.add_parser("style", help="analyse le rythme de vidéos déjà publiées")
+    st = sub.add_parser("style", help="apprend le style de vidéos déjà montées (onglet « Mes vidéos »)")
     st.add_argument("videos", nargs="+")
     st.set_defaults(func=cmd_style)
 
