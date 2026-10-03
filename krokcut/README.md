@@ -106,12 +106,22 @@ Bibliotheque/
 ### 3. La bible de la chaîne
 Réglages → **Bible de la chaîne** : qui est Krok, qui est Mil, vos personnages, vos running gags, votre vocabulaire, ce que vous coupez toujours, des exemples de moments qui ont cartonné… Un modèle est pré-rempli. **C'est ce qui fait la plus grosse différence sur la qualité du dérush.**
 
-### 4. (Optionnel) Le rythme de vos vidéos publiées
-Mesure le nombre de changements de plan par minute de vos vidéos déjà montées, et le donne à Claude comme repère :
+### 4. Vos vidéos déjà montées (onglet « Mes vidéos »)
+C'est là que KrokCut apprend **ce que vous attendez**. Dépose 3 à 5 vidéos représentatives que vous avez déjà montées et publiées (glisser-déposer, ou « Choisir sur le disque » pour ne pas les copier). Pour chacune, KrokCut :
 
-```bash
-python -m krokcut style "D:\KrokEtMil\Publiees\episode1.mp4" "D:\KrokEtMil\Publiees\episode2.mp4"
-```
+1. mesure la **durée** et le **rythme** (changements de plan par minute, durée médiane d'un plan, part de parole) ;
+2. **reconnaît dans le son les bruitages et musiques de votre bibliothèque** (à quel instant, combien de fois) : il apprend par exemple que le « vine boom » tombe juste après une vanne ;
+3. prend des **images clés** et **transcrit** ce que vous avez gardé au montage ;
+4. demande à **Claude** d'analyser le style : structure (teaser, parties, fin), ce qui est gardé, zooms, textes, persos et memes visibles à l'image, usage des bruitages, règles concrètes et exemples de moments.
+
+Avec toutes les vidéos analysées, KrokCut rédige un **guide de style** (visible dans l'onglet) qui est donné à Claude à chaque dérush et à chaque montage, avec des exemples de moments que vous avez gardés. Il propose aussi des **réglages de montage** (durée, bruitages par minute, zooms, textes, musique, teaser) : un bouton les applique au style par défaut.
+
+- Les bruitages ne sont reconnus que s'ils sont dans la bibliothèque et utilisés tels quels (un son modifié ou absent n'est pas vu). Après avoir ajouté la bibliothèque, clique sur **Réanalyser**.
+- Sans clé Claude, seules les mesures sont utilisées (rythme, bruitages), pas l'analyse du style.
+- Coût indicatif : de l'ordre de 10 à 30 centimes par vidéo analysée (images + transcription envoyées à Claude), plus quelques centimes pour rédiger le guide. La transcription des références utilise le modèle Whisper `small` (réglable : `references_whisper_model` dans `workspace/config.yaml`), plus rapide.
+- Pour corriger le guide, écris la bonne règle dans la **bible de la chaîne** : elle passe avant le guide.
+
+En ligne de commande, la même analyse : `python -m krokcut style episode1.mp4 episode2.mp4`.
 
 Le style de montage (densité de zooms, de bruitages, de persos, taille des persos, volume musique, POV seul / incrustation / écran partagé…) se règle dans Réglages → **Style de montage**, et peut être ajusté épisode par épisode.
 
