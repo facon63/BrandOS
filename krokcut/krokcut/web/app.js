@@ -35,9 +35,19 @@ function toast(msg, isError = false) {
 }
 
 /* ------------------------------------------------------------------ onglets */
-$$(".tab").forEach((tab) =>
+$("#btn-quit").addEventListener("click", async () => {
+  const running = state.projects.some((p) => p.busy);
+  const msg = running
+    ? "Un traitement est en cours : il sera interrompu (tu pourras le reprendre avec « Continuer »). Quitter KrokCut ?"
+    : "Quitter KrokCut ?";
+  if (!confirm(msg)) return;
+  try { await api("/api/quit", { method: "POST" }); } catch (_) { /* le serveur s'arrête */ }
+  document.body.innerHTML = '<div class="card" style="max-width:520px;margin:15vh auto;text-align:center"><h2>KrokCut est fermé 👋</h2><p class="muted">Pour le rouvrir : double-clic sur l\'app KrokCut.</p></div>';
+});
+
+$$(".tab[data-view]").forEach((tab) =>
   tab.addEventListener("click", () => {
-    $$(".tab").forEach((t) => t.classList.toggle("active", t === tab));
+    $$(".tab[data-view]").forEach((t) => t.classList.toggle("active", t === tab));
     $$(".view").forEach((v) => v.classList.toggle("hidden", v.id !== `view-${tab.dataset.view}`));
     if (tab.dataset.view === "library") loadLibrary();
     if (tab.dataset.view === "settings") loadSettings();

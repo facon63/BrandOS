@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import string
+import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -25,7 +27,14 @@ from .project import STEPS, Project
 WEB = Path(__file__).parent / "web"
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm", ".mts", ".ts", ".flv"}
 
-app = FastAPI(title="KrokCut", version=__version__)
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    for project in Project.list():  # un traitement coupé par une fermeture de l'app reprendra proprement
+        project.recover_interrupted()
+    yield
+
+
+app = FastAPI(title="KrokCut", version=__version__, lifespan=lifespan)
 jobs = JobManager()
 app.mount("/static", StaticFiles(directory=WEB), name="static")
 
@@ -392,6 +401,13 @@ def library_file(id: str):
     if not asset:
         raise HTTPException(404)
     return FileResponse(lib.path_of(asset))
+
+
+@app.post("/api/quit")
+def quit_app():
+    """Ferme KrokCut (bouton « Quitter » de l'interface)."""
+    threading.Timer(0.5, lambda: os._exit(0)).start()
+    return {"ok": True, "interrupted": bool(jobs.current)}
 
 
 @app.exception_handler(ValueError)

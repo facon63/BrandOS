@@ -228,6 +228,20 @@ class Project:
                 self.state.steps[s] = StepStatus()
             self.save()
 
+    def recover_interrupted(self) -> bool:
+        """Étapes restées « en cours » parce que KrokCut a été fermé : on les remet en attente."""
+        changed = False
+        with self._lock:
+            for status in self.state.steps.values():
+                if status.status == "running":
+                    status.status = "pending"
+                    status.progress = 0.0
+                    status.message = "Interrompu (KrokCut a été fermé) : clique sur Continuer"
+                    changed = True
+            if changed:
+                self.save()
+        return changed
+
     def log(self, message: str) -> None:
         stamp = datetime.now().strftime("%H:%M:%S")
         with self._lock, open(self.root / "log.txt", "a", encoding="utf-8") as fh:

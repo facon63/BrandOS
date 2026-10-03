@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import queue
+import shutil
+import subprocess
 import threading
 from dataclasses import dataclass
 
@@ -61,6 +64,7 @@ class JobManager:
                 self.pending.remove(job)
                 self.current = job
                 self._cancel.clear()
+            awake = _keep_awake()
             try:
                 project = Project.open(job.project_id)
                 Pipeline(project, AppConfig.load(), cancel_event=self._cancel).run(job.from_step, job.until)
@@ -72,5 +76,20 @@ class JobManager:
                 except Exception:
                     pass
             finally:
+                if awake:
+                    awake.terminate()
                 with self._lock:
                     self.current = None
+
+
+def _keep_awake() -> subprocess.Popen | None:
+    """Sur Mac, empêche la mise en veille pendant un dérush de plusieurs heures."""
+    if not shutil.which("caffeinate"):
+        return None
+    try:
+        # -w : s'arrête tout seul si KrokCut est fermé en plein traitement
+        return subprocess.Popen(
+            ["caffeinate", "-i", "-w", str(os.getpid())], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+    except OSError:
+        return None

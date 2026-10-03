@@ -42,3 +42,31 @@ def test_api_smoke(workspace, rushes, library_dir):
     assert detail["busy"] is None and detail["outputs"] == []
     assert client.get("/api/projects/inconnu").status_code == 404
     assert client.get("/api/chaine").json()["text"].startswith("# Krok et Mil")
+
+
+def test_recovery_and_quit(workspace, rushes, monkeypatch):
+    from krokcut import server
+    from krokcut.project import Project
+
+    p = Project.create("Coupé", [str(rushes["a"])], [str(rushes["b"])])
+    p.set_step("probe", status="done")
+    p.set_step("audio", status="running", progress=0.4)
+    # Au démarrage, l'étape restée « en cours » (app fermée) est remise en attente
+    with TestClient(app):
+        pass
+    p.reload()
+    assert p.state.steps["probe"].status == "done"
+    assert p.state.steps["audio"].status == "pending" and "Interrompu" in p.state.steps["audio"].message
+
+    started = []
+
+    class FakeTimer:
+        def __init__(self, delay, fn):
+            started.append(delay)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(server.threading, "Timer", FakeTimer)
+    assert TestClient(app).post("/api/quit").json()["ok"] is True
+    assert started == [0.5]

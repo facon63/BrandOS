@@ -39,19 +39,20 @@ Chaque étape est mise en cache : si le PC s'éteint pendant la transcription, �
 2. Double-clique sur **`installer.bat`** (il installe aussi ffmpeg via winget si besoin, relance-le une fois après).
 3. Double-clique sur **`lancer.bat`** : l'interface s'ouvre dans le navigateur (http://localhost:8765).
 
-### Mac
+### Mac (une seule commande)
 
-1. Installe [Homebrew](https://brew.sh) si ce n'est pas déjà fait, puis dans le Terminal :
+1. Ouvre l'app **Terminal** (Cmd + Espace, tape « Terminal », Entrée).
+2. Colle cette ligne puis Entrée :
    ```bash
-   brew install python@3.12 ffmpeg
+   curl -fsSL https://raw.githubusercontent.com/facon63/BrandOS/claude/upbeat-fermi-qf074j/krokcut/install-mac.sh | bash
    ```
-2. Récupère le dossier `krokcut` (clone du dépôt ou ZIP de la branche), puis :
-   ```bash
-   cd chemin/vers/krokcut
-   bash installer.sh
-   bash lancer.sh
-   ```
-3. Les fois suivantes : double-clic sur **`KrokCut.command`** (au tout premier double-clic, macOS peut demander une confirmation : clic droit → Ouvrir).
+   Elle télécharge tout ce qu'il faut (Python, ffmpeg, dépendances) dans le dossier `~/KrokCut`, sans rien installer ailleurs ni demander de mot de passe, puis crée l'app **KrokCut** (dans Applications et sur le Bureau) et l'ouvre.
+3. Les fois suivantes : **double-clic sur KrokCut**. Pour fermer : bouton **⏻ Quitter** en haut de l'interface.
+
+- **Mettre à jour** : recolle la même commande (épisodes et réglages sont conservés).
+- **Désinstaller** : supprime le dossier `KrokCut` de ton dossier personnel et l'app KrokCut.
+- Si macOS demande l'autorisation d'accéder à un dossier (Téléchargements, disque externe…), clique sur **Autoriser** : c'est pour lire les rush.
+- Pendant un traitement, KrokCut empêche le Mac de se mettre en veille (l'écran peut s'éteindre, ça continue).
 
 Sur Mac, la transcription tourne sur le processeur (Whisper n'utilise pas la puce graphique d'Apple) : choisis le modèle **medium** ou **small** dans Réglages si c'est trop long. Sur Mac Apple Silicon (M1 à M4…), l'encodeur **« H.264 Mac »** accélère le rendu final.
 

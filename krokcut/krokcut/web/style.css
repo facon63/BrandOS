@@ -38,6 +38,8 @@ h3 { margin: 0 0 8px; font-size: 16px; }
 nav { display: flex; gap: 4px; }
 .tab { background: none; border: 0; color: var(--muted); padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 15px; }
 .tab.active, .tab:hover { color: var(--text); background: var(--panel-2); }
+.tab.quit { margin-left: 8px; }
+.tab.quit:hover { color: var(--danger); }
 
 .banner { padding: 10px 20px; background: #3a2c12; color: var(--mil); border-bottom: 1px solid #5a4318; }
 
