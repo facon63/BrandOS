@@ -725,7 +725,8 @@ function renderReferences(data) {
   $("#guide-meta").textContent = data.guide_busy
     ? "Mise à jour du guide en cours…"
     : g
-      ? `Tiré de ${n} vidéo${n > 1 ? "s" : ""} · ${g.source === "claude" ? "rédigé par Claude" : "mesures seules (ajoute une clé Claude pour un vrai guide)"} · mis à jour le ${new Date(g.updated).toLocaleString("fr-FR")}`
+      ? `Tiré de ${n} vidéo${n > 1 ? "s" : ""} · ${g.source === "claude" ? "rédigé par Claude" : "mesures seules (ajoute une clé Claude pour un vrai guide)"} · mis à jour le ${new Date(g.updated).toLocaleString("fr-FR")}` +
+        ((g.ignored || []).length ? ` · ignorée${g.ignored.length > 1 ? "s" : ""} car trop longue${g.ignored.length > 1 ? "s" : ""} (plus d'1 h, sûrement des rush) : ${g.ignored.join(", ")}` : "")
       : "";
   $("#guide-rebuild").disabled = data.guide_busy;
   $("#guide-text").innerHTML = g ? miniMarkdown(g.text) : "";
@@ -776,8 +777,12 @@ async function loadRefDetails(id) {
 async function addReferencePaths(paths) {
   if (!paths.length) return;
   try {
-    await api("/api/references", { method: "POST", body: { paths } });
-    toast(`${paths.length} vidéo${paths.length > 1 ? "s" : ""} ajoutée${paths.length > 1 ? "s" : ""} : analyse lancée.`);
+    const res = await api("/api/references", { method: "POST", body: { paths } });
+    const fresh = res.added.length - res.duplicates.length;
+    const parts = [];
+    if (fresh > 0) parts.push(`${fresh} vidéo${fresh > 1 ? "s" : ""} ajoutée${fresh > 1 ? "s" : ""} : analyse lancée.`);
+    if (res.duplicates.length) parts.push(`Déjà dans la liste : ${res.duplicates.join(", ")}.`);
+    toast(parts.join(" "));
   } catch (err) {
     toast(err.message, true);
   }

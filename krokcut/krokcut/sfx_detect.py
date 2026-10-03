@@ -129,8 +129,9 @@ def detect_library_sounds(
             if found:
                 music_found[asset["id"]] = max(music_found.get(asset["id"], 0.0), max(s for _, s in found))
             continue
-        found = detector.find(template)
-        if len(found) > 8 * duration_min + 3:  # un son qui « colle » partout n'est pas fiable
+        limit = int(8 * duration_min + 3)  # au-delà, le son « colle » partout : pas fiable
+        found = detector.find(template, max_hits=limit + 1)
+        if len(found) > limit:
             unreliable.append(asset["id"])
             continue
         hits += [{"t": round(t, 2), "asset": asset["id"], "score": round(s, 3)} for t, s in found]

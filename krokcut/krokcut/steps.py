@@ -102,6 +102,13 @@ class StepDoc:
                 self.state.steps[s] = StepStatus()
             self.save()
 
+    def invalidate(self, steps: list[str]) -> None:
+        """Remet à zéro seulement certaines étapes (les autres restent faites)."""
+        with self._lock:
+            for s in steps:
+                self.state.steps[s] = StepStatus()
+            self.save()
+
     def recover_interrupted(self) -> bool:
         """Étapes restées « en cours » parce que KrokCut a été fermé : on les remet en attente."""
         changed = False
@@ -162,6 +169,8 @@ class StepRunner:
             t.log(f"▶ {step}")
             try:
                 message = getattr(self, f"step_{step}")() or ""
+                if self.cancel.is_set():  # annulé pendant une étape sans point d'arrêt (appel à Claude…)
+                    raise Cancelled()
             except Cancelled:
                 t.set_step(step, status="pending", message="Annulé")
                 t.log("■ annulé")

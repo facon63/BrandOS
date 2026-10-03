@@ -233,3 +233,180 @@ def test_recover_interrupted_reference(workspace, published):
     doc.set_step("rhythm", status="running", progress=0.3)
     assert store.open(doc.id).recover_interrupted()
     assert "Reprendre" in store.open(doc.id).state.steps["rhythm"].message
+
+
+# ------------------------------------------------- corrections après relecture
+def analysed(store, cfg, published):
+    doc = store.add(published["path"])
+    assert ReferenceAnalyzer(doc, cfg, store, words_provider=lambda pcm, levels: published["words"]).run(), doc.state.last_error
+    return store.open(doc.id)
+
+
+def test_rerun_keeps_images_when_source_moved(workspace, library_dir, published, tmp_path, monkeypatch):
+    from krokcut import server
+
+    cfg = setup_cfg(library_dir)
+    store = ReferenceStore()
+    moved = tmp_path / "copie.mp4"
+    moved.write_bytes(published["path"].read_bytes())
+    doc = store.add(moved)
+    assert ReferenceAnalyzer(doc, cfg, store, words_provider=lambda pcm, levels: published["words"]).run()
+    images = len(list((doc.root / "images").glob("*.jpg")))
+    moved.unlink()  # la vidéo d'origine a été déplacée
+
+    manager = JobManager(start=False)
+    monkeypatch.setattr(server, "jobs", manager)
+    TestClient(server.app).post(f"/api/references/{doc.id}/run", json={})
+    doc.reload()
+    # « Réanalyser » ne refait que les bruitages et le style
+    assert [s for s, st in doc.state.steps.items() if st.status != "done"] == ["sfx", "analyze"]
+    assert ReferenceAnalyzer(doc, cfg, store).run(), doc.state.last_error
+    assert len(list((doc.root / "images").glob("*.jpg"))) == images
+    # relancer les images sans la source : on garde les anciennes
+    words = lambda pcm, levels: published["words"]  # noqa: E731
+    assert ReferenceAnalyzer(store.open(doc.id), cfg, store, words_provider=words).run(from_step="frames")
+    assert "conservées" in store.open(doc.id).state.steps["frames"].message
+    assert len(list((doc.root / "images").glob("*.jpg"))) == images
+    # reprendre une analyse qui a besoin de la source : message clair
+    assert not ReferenceAnalyzer(store.open(doc.id), cfg, store, words_provider=words).run(from_step="rhythm")
+    assert "introuvable" in store.open(doc.id).state.last_error
+
+
+def test_speech_ratio_and_measured_summary(workspace, published):
+    from krokcut.references import measured_summary, speech_ratio, suggested_style
+
+    words = [{"s": 0.0, "e": 0.4}, {"s": 0.5, "e": 1.0}, {"s": 5.0, "e": 6.0}]
+    assert speech_ratio(words, 10.0) == pytest.approx(0.2)
+    assert speech_ratio([], 10.0) == 0.0
+
+    store = ReferenceStore()
+    docs = []
+    for i, metrics in enumerate(
+        [
+            {"duration_min": 12, "height": 1080, "cuts_per_min": 10.0, "median_shot": 4.0, "sfx_checked": True, "sfx_per_min": 6.0, "sfx_top": [["sfx/a", 70]], "speech_ratio": 0.7},
+            {"duration_min": 11, "height": 1080, "cuts_per_min": 8.0, "median_shot": 5.0, "sfx_checked": True, "sfx_per_min": 0.0, "speech_ratio": 0.8},
+            {"duration_min": 10, "height": 0, "cuts_per_min": 0, "median_shot": 600.0, "sfx_checked": False, "music_used": ["music/x"], "sfx_top": [["sfx/b", 9]]},
+        ]
+    ):
+        doc = store.add(published["path"].parent / "son.wav") if i == 0 else None
+        if doc is None:
+            src = published["path"].parent / f"copie{i}.wav"
+            src.write_bytes((published["path"].parent / "son.wav").read_bytes() + bytes([i]))
+            doc = store.add(src)
+        doc.set_metrics(**metrics)
+        docs.append(doc)
+    text, measured = measured_summary(docs)
+    assert "Rythme : 9 changements de plan par minute, plan médian 4.5 s" in text  # le fichier audio ne compte pas
+    assert "au moins 3 par minute" in text  # 6 et 0 : les zéros comptent
+    assert "sfx/b" not in text and "music/x" not in text  # non vérifié : on n'en parle pas
+    assert "Parole : 75 %" in text
+    low = suggested_style([], {"durations": [12], "sfx_rate": 0.2, "sfx_checked": True}, None)
+    assert "sfx_per_minute" not in low["values"]  # 0,2/min mesuré n'est pas une consigne
+
+
+def test_stale_sfx_metrics_reset_and_rush_excluded(workspace, library_dir, published, tmp_path):
+    cfg = setup_cfg(library_dir)
+    store = ReferenceStore()
+    doc = analysed(store, cfg, published)
+    assert doc.state.metrics["sfx_hits"] == 4
+    cfg.library_dir = str(tmp_path / "vide")  # bibliothèque débranchée
+    (tmp_path / "vide").mkdir()
+    cfg.save()
+    assert ReferenceAnalyzer(doc, cfg, store, words_provider=lambda pcm, levels: published["words"]).run(from_step="sfx")
+    m = store.open(doc.id).state.metrics
+    assert m["sfx_checked"] is False and m["sfx_hits"] == 0 and m["sfx_top"] == []
+    analysis = store.open(doc.id).read_json("analyse.json")
+    assert not any("boing" in r for r in analysis["rules"])
+
+    doc = store.open(doc.id)
+    doc.set_metrics(duration_min=182)  # un rush déposé par erreur
+    data = build_guide(store, cfg)
+    assert data == {} and store.prompt_block() == ""
+
+
+def test_duplicate_upload_is_detected(workspace, published, monkeypatch):
+    from krokcut import server
+
+    monkeypatch.setattr(server, "jobs", JobManager(start=False))
+    client = TestClient(server.app)
+    content = published["path"].read_bytes()
+    first = client.put("/api/upload/a.mp4?folder=references", content=content).json()["path"]
+    r1 = client.post("/api/references", json={"paths": [first]}).json()
+    second = client.put("/api/upload/a.mp4?folder=references", content=content).json()["path"]
+    r2 = client.post("/api/references", json={"paths": [second]}).json()
+    assert r1["duplicates"] == [] and r2["duplicates"] == [r1["added"][0]["name"]]
+    assert len(ReferenceStore().list()) == 1
+    files = sorted(p.name for p in ReferenceStore().files_dir.iterdir())
+    assert files == ["a.mp4"]  # la 2e copie a été supprimée, pas de .part qui traîne
+
+
+def test_job_priority_and_cancel_during_analyze(workspace, library_dir, published, monkeypatch):
+    manager = JobManager(start=False)
+    manager.submit("episode", kind="project")
+    manager.submit("ref1", kind="reference")
+    manager.submit_guide()
+    manager.submit("ref2", kind="reference")
+    order = []
+    with manager._lock:
+        while manager.pending:
+            job = manager.next_job_locked()
+            order.append((job.kind, job.target))
+    assert order == [("reference", "ref1"), ("reference", "ref2"), ("guide", "guide"), ("project", "episode")]
+
+    cfg = setup_cfg(library_dir)
+    store = ReferenceStore()
+    doc = store.add(published["path"])
+    analyzer = ReferenceAnalyzer(doc, cfg, store, words_provider=lambda pcm, levels: published["words"])
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    def cancelled_call(self, **kwargs):
+        analyzer.cancel.set()  # l'utilisateur clique « Annuler » pendant l'appel à Claude
+        return fake_ask_json(self, **kwargs)
+
+    monkeypatch.setattr(LLM, "ask_json", cancelled_call)
+    assert not analyzer.run()
+    assert store.open(doc.id).state.steps["analyze"].status == "pending"
+
+
+def test_sticky_sound_marked_unreliable_on_long_video(monkeypatch, tmp_path):
+    from krokcut import sfx_detect
+
+    class FakeDetector:
+        def __init__(self, signal, *a, **k):
+            pass
+
+        def find(self, template, max_hits=200, **kwargs):
+            return [(i * 5.0, 0.5) for i in range(min(max_hits + 1, 360))]  # 12 fois par minute
+
+    monkeypatch.setattr(sfx_detect, "Detector", FakeDetector)
+    monkeypatch.setattr(sfx_detect, "load_asset_audio", lambda *a, **k: np.ones(4000, np.float32))
+
+    class Lib:
+        def of_kind(self, kind):
+            return [{"id": "sfx/pop", "name": "pop", "kind": "sfx", "duration": 0.5}] if kind == "sfx" else []
+
+        def path_of(self, asset):
+            return tmp_path / "pop.wav"
+
+    result = sfx_detect.detect_library_sounds(np.zeros(30 * 60 * 16000 // 50, np.float32).repeat(50), Lib(), tmp_path)
+    assert result["unreliable"] == ["sfx/pop"] and result["hits"] == []
+
+
+def test_guide_precedence_and_corrupt_guide(workspace, library_dir, published, monkeypatch):
+    from krokcut import server
+
+    cfg = setup_cfg(library_dir)
+    store = ReferenceStore()
+    analysed(store, cfg, published)
+    build_guide(store, cfg)
+    project = Project.create("Ep", [str(published["path"])], [str(published["path"])])
+    prompt = Pipeline(project, cfg).system_prompt()
+    assert "la bible de la chaîne et les consignes spécifiques ci-dessous priment" in prompt
+    assert "\n#### Format et rythme" in prompt  # titres rangés sous la section des repères
+    assert prompt.index("Repères tirés") < prompt.index("## La chaîne")
+
+    store.guide_json.write_text('{"updated": "2026', "utf-8")  # écriture coupée net
+    assert store.guide() is None and store.prompt_block() == ""
+    assert "Repères tirés" not in Pipeline(project, cfg).system_prompt()
+    monkeypatch.setattr(server, "jobs", JobManager(start=False))
+    assert TestClient(server.app).get("/api/references").status_code == 200

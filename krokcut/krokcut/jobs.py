@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import itertools
 import os
-import queue
 import shutil
 import subprocess
 import threading
@@ -17,6 +17,10 @@ from .references import ReferenceAnalyzer, ReferenceStore, build_guide
 
 JobKind = Literal["project", "reference", "guide"]
 GUIDE_TARGET = "guide"
+# Les vidéos de référence et le guide passent avant les épisodes en attente :
+# un épisode lancé juste après avoir déposé des vidéos profite ainsi du guide à jour.
+PRIORITY = {"reference": 0, "guide": 1, "project": 2}
+_counter = itertools.count()
 
 
 @dataclass
@@ -25,12 +29,13 @@ class Job:
     from_step: str | None = None
     until: str | None = None
     kind: JobKind = "project"
+    seq: int = 0
 
 
 class JobManager:
     def __init__(self, start: bool = True):
-        self._queue: "queue.Queue[Job]" = queue.Queue()
         self._lock = threading.Lock()
+        self._wakeup = threading.Condition(self._lock)
         self.current: Job | None = None
         self.pending: list[Job] = []
         self._cancel = threading.Event()
@@ -38,23 +43,31 @@ class JobManager:
         if start:
             self._thread.start()
 
+    def _push_locked(self, job: Job) -> None:
+        job.seq = next(_counter)
+        self.pending.append(job)
+        self._wakeup.notify()
+
     def submit(self, target: str, from_step: str | None = None, until: str | None = None, kind: JobKind = "project") -> None:
         with self._lock:
             if self._busy_locked(target, kind):
                 raise RuntimeError("Déjà en cours de traitement.")
-            job = Job(target, from_step, until, kind)
-            self.pending.append(job)
-        self._queue.put(job)
+            self._push_locked(Job(target, from_step, until, kind))
 
     def submit_guide(self) -> bool:
         """Reconstruit le guide de style, sauf s'il est déjà prévu (évite de le refaire 5 fois de suite)."""
         with self._lock:
             if any(j.kind == "guide" for j in self.pending):
                 return False
-            job = Job(GUIDE_TARGET, kind="guide")
-            self.pending.append(job)
-        self._queue.put(job)
+            self._push_locked(Job(GUIDE_TARGET, kind="guide"))
         return True
+
+    def next_job_locked(self) -> Job | None:
+        if not self.pending:
+            return None
+        job = min(self.pending, key=lambda j: (PRIORITY[j.kind], j.seq))
+        self.pending.remove(job)
+        return job
 
     def cancel(self, target: str, kind: JobKind = "project") -> None:
         with self._lock:
@@ -79,11 +92,10 @@ class JobManager:
 
     def _loop(self) -> None:
         while True:
-            job = self._queue.get()
             with self._lock:
-                if job not in self.pending:  # annulé avant de démarrer
-                    continue
-                self.pending.remove(job)
+                while not self.pending:
+                    self._wakeup.wait()
+                job = self.next_job_locked()
                 self.current = job
                 self._cancel.clear()
             awake = _keep_awake()
@@ -104,7 +116,7 @@ class JobManager:
         elif job.kind == "reference":
             store = ReferenceStore()
             ok = ReferenceAnalyzer(store.open(job.target), cfg, store, cancel_event=self._cancel).run(job.from_step)
-            if ok:
+            if ok and not self._cancel.is_set():
                 self.submit_guide()
         elif job.kind == "guide":
             store = ReferenceStore()

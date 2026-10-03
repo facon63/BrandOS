@@ -8,9 +8,13 @@ résumé dans un « guide de style » injecté dans les prompts de chaque dérus
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
+import os
 import re
 import shutil
 import statistics
+import tempfile
 import threading
 from collections import Counter
 from datetime import datetime
@@ -77,12 +81,37 @@ GUIDE_SCHEMA = obj(
 
 
 # ------------------------------------------------------------------ stockage
+def file_signature(path: Path, chunk: int = 1 << 20) -> str:
+    """Taille + empreinte du début et de la fin : rapide même sur une vidéo de plusieurs Go."""
+    size = path.stat().st_size
+    digest = hashlib.sha1(str(size).encode())
+    with open(path, "rb") as fh:
+        digest.update(fh.read(chunk))
+        if size > 2 * chunk:
+            fh.seek(-chunk, os.SEEK_END)
+            digest.update(fh.read(chunk))
+    return digest.hexdigest()
+
+
+def atomic_write(path: Path, text: str) -> None:
+    """Écrit via un fichier temporaire : un arrêt brutal ne laisse jamais un fichier tronqué."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
+
+
+def too_long(doc: "ReferenceDoc") -> bool:
+    return (doc.state.metrics.get("duration_min") or 0) > MAX_REFERENCE_MINUTES
+
+
 class ReferenceState(BaseModel):
     id: str
     name: str
     path: str
     added: str
     copied: bool = False  # fichier copié dans l'espace de travail (supprimé avec la référence)
+    signature: str = ""  # empreinte du contenu : repère une même vidéo déposée deux fois
     steps: dict[str, StepStatus] = Field(default_factory=lambda: {s: StepStatus() for s in REF_STEP_IDS})
     metrics: dict = Field(default_factory=dict)
     last_error: str = ""
@@ -138,12 +167,28 @@ class ReferenceStore:
         return ReferenceDoc(root)
 
     def add(self, path: str | Path, name: str | None = None) -> ReferenceDoc:
+        return self.add_or_get(path, name)[0]
+
+    def add_or_get(self, path: str | Path, name: str | None = None) -> tuple[ReferenceDoc, bool]:
+        """Ajoute une vidéo ; renvoie (référence, nouvelle ?). Une vidéo déjà présente n'est pas dupliquée."""
         path = Path(path).expanduser().resolve()
-        if not path.exists():
+        if not path.is_file():
             raise FileNotFoundError(f"Fichier introuvable : {path}")
+        signature = file_signature(path)
+        in_workspace = self.files_dir.resolve() in path.parents
         for doc in self.list():
-            if Path(doc.state.path) == path:
-                return doc  # déjà ajoutée
+            known = Path(doc.state.path)
+            if known == path:
+                return doc, False
+            other = doc.state.signature
+            if not other and known.is_file():
+                other = file_signature(known)
+                doc.state.signature = other
+                doc.save()
+            if other == signature:
+                if in_workspace:  # même vidéo déposée une 2e fois : inutile de garder la copie
+                    path.unlink(missing_ok=True)
+                return doc, False
         base = slugify(name or path.stem)[:60]
         ref_id, i = base, 2
         while (self.root / ref_id).exists():
@@ -155,10 +200,11 @@ class ReferenceStore:
             name=name or path.stem,
             path=str(path),
             added=datetime.now().isoformat(timespec="seconds"),
-            copied=self.files_dir.resolve() in path.parents,
+            copied=in_workspace,
+            signature=signature,
         )
         (root / ReferenceDoc.STATE_FILE).write_text(state.model_dump_json(indent=2), "utf-8")
-        return ReferenceDoc(root)
+        return ReferenceDoc(root), True
 
     def remove(self, ref_id: str) -> None:
         doc = self.open(ref_id)
@@ -176,13 +222,13 @@ class ReferenceStore:
         return self.root / "guide.json"
 
     def guide(self) -> dict | None:
-        if not self.guide_json.exists():
+        """Le guide courant, ou None (absent ou illisible : il ne doit jamais bloquer un dérush)."""
+        try:
+            data = json.loads(self.guide_json.read_text("utf-8"))
+            data["text"] = self.guide_md.read_text("utf-8") if self.guide_md.exists() else ""
+        except (OSError, ValueError):
             return None
-        import json
-
-        data = json.loads(self.guide_json.read_text("utf-8"))
-        data["text"] = self.guide_md.read_text("utf-8") if self.guide_md.exists() else ""
-        return data
+        return data if isinstance(data, dict) else None
 
     def analyses(self) -> list[tuple[ReferenceDoc, dict]]:
         out = []
@@ -197,7 +243,9 @@ class ReferenceStore:
         guide = self.guide()
         if not guide or not guide.get("text", "").strip():
             return ""
-        parts = [guide["text"].strip()]
+        # Les titres du guide descendent de deux niveaux pour rester sous la section « Repères »
+        text = re.sub(r"(?m)^(#{1,4}) ", lambda m: "#" * (len(m.group(1)) + 2) + " ", guide["text"].strip())
+        parts = [text]
         examples = guide.get("examples") or []
         if examples:
             rows = [
@@ -205,9 +253,9 @@ class ReferenceStore:
                 + (f" (effets : {e['effects']})" if e.get("effects") else "")
                 for e in examples[:12]
             ]
-            parts.append("### Exemples de moments gardés dans vos vidéos publiées\n" + "\n".join(rows))
+            parts.append("#### Exemples de moments gardés dans vos vidéos publiées\n" + "\n".join(rows))
         if guide.get("measured"):
-            parts.append("### Mesures sur vos vidéos publiées\n" + guide["measured"])
+            parts.append("#### Mesures sur vos vidéos publiées\n" + guide["measured"])
         text = "\n\n".join(parts)
         if len(text) > PROMPT_BLOCK_MAX_CHARS:
             text = text[:PROMPT_BLOCK_MAX_CHARS].rsplit("\n", 1)[0] + "\n(…)"
@@ -247,6 +295,22 @@ def rhythm_metrics(cuts: list[float], duration: float) -> dict:
     }
 
 
+def speech_ratio(words: list[dict], duration: float, join_gap: float = 0.3) -> float:
+    """Part du temps où quelqu'un parle, d'après les mots transcrits (blancs < 0,3 s comptés)."""
+    if duration <= 0 or not words:
+        return 0.0
+    spans = sorted((w["s"], min(w["e"], w["s"] + 1.5)) for w in words)
+    total, cur_s, cur_e = 0.0, spans[0][0], spans[0][1]
+    for s, e in spans[1:]:
+        if s <= cur_e + join_gap:
+            cur_e = max(cur_e, e)
+        else:
+            total += cur_e - cur_s
+            cur_s, cur_e = s, e
+    total += cur_e - cur_s
+    return min(1.0, total / duration)
+
+
 def timeline_text(lines: list[dict], hits: list[dict]) -> str:
     """Transcription de la vidéo finale entremêlée des bruitages reconnus."""
     events = [(l["start"], f"[{fmt_time(l['start'])}] {l['text']}") for l in lines]
@@ -264,10 +328,10 @@ def heuristic_analysis(doc: ReferenceDoc, lines: list[dict], sfx: dict) -> dict:
             f"Rythme d'environ {m['cuts_per_min']:g} changements de plan par minute "
             f"(un plan dure {m.get('median_shot', 0):g} s en médiane)."
         )
-    top = m.get("sfx_top") or []
+    top = (m.get("sfx_top") or []) if m.get("sfx_checked") else []
     if top:
         rules.append("Bruitages les plus utilisés : " + ", ".join(f"{a} ({n}×)" for a, n in top[:6]) + ".")
-    if m.get("music_used"):
+    if m.get("sfx_checked") and m.get("music_used"):
         rules.append("Musique de fond utilisée : " + ", ".join(m["music_used"]) + ".")
     examples = []
     for h in (sfx.get("hits") or [])[:40]:
@@ -326,9 +390,15 @@ class ReferenceAnalyzer(StepRunner):
         curve = np.load(self.doc.root / "niveaux.npy")
         return Levels.compute_thresholds(curve, curve)
 
+    def source(self) -> Path:
+        path = Path(self.doc.state.path)
+        if not path.is_file():
+            raise FileNotFoundError(f"Fichier d'origine introuvable (déplacé ou supprimé ?) : {path}")
+        return path
+
     # ----------------------------------------------------------------- étapes
     def step_probe(self) -> str:
-        info = probe(self.doc.state.path)
+        info = probe(self.source())
         if not info.has_audio:
             raise ValueError("Cette vidéo n'a pas de son : impossible d'en tirer le style.")
         self.doc.set_metrics(
@@ -345,7 +415,7 @@ class ReferenceAnalyzer(StepRunner):
     def step_audio(self) -> str:
         if not self.pcm.exists():
             extract_pcm(
-                self.doc.state.path,
+                self.source(),
                 self.pcm,
                 duration=self.duration,
                 on_progress=lambda f: self.progress("audio", f),
@@ -356,7 +426,7 @@ class ReferenceAnalyzer(StepRunner):
         cuts = []
         if self.doc.state.metrics.get("height"):
             cuts = scene_cuts(
-                self.doc.state.path,
+                self.source(),
                 self.doc.root,
                 self.duration,
                 on_progress=lambda f: self.progress("rhythm", 0.9 * f, "Détection des changements de plan"),
@@ -364,21 +434,20 @@ class ReferenceAnalyzer(StepRunner):
         self.doc.write_json("coupes.json", cuts)
         curve = level_curve(self.pcm)
         np.save(self.doc.root / "niveaux.npy", curve)
-        levels = Levels.compute_thresholds(curve, curve)
-        speech = float(levels.active_mask().mean()) if len(curve) else 0.0
         metrics = rhythm_metrics(cuts, self.duration)
-        self.doc.set_metrics(**metrics, speech_ratio=round(speech, 2))
+        self.doc.set_metrics(**metrics)
         return f"{metrics['cuts_per_min']:g} changements de plan / min, plan médian {metrics['median_shot']:g} s"
 
     def step_sfx(self) -> str:
         library = Library.load(self.cfg.library_dir) if self.cfg.library_dir else Library(Path("."), [])
+        unchecked = {"sfx_checked": False, "sfx_hits": 0, "sfx_per_min": 0.0, "sfx_top": [], "music_used": []}
         if not library.of_kind("sfx", "music"):
             self.doc.write_json("bruitages.json", {"hits": [], "music": [], "skipped": 0, "unreliable": []})
-            self.doc.set_metrics(sfx_checked=False)
+            self.doc.set_metrics(**unchecked)
             return "Bibliothèque vide : rien à reconnaître (ajoute-la puis clique sur Réanalyser)"
         if self.duration > MAX_REFERENCE_MINUTES * 60:
             self.doc.write_json("bruitages.json", {"hits": [], "music": [], "skipped": 0, "unreliable": []})
-            self.doc.set_metrics(sfx_checked=False)
+            self.doc.set_metrics(**unchecked)
             return "Vidéo trop longue : étape sautée"
         signal = read_pcm(self.pcm, 0, self.duration)
         result = detect_library_sounds(
@@ -404,19 +473,34 @@ class ReferenceAnalyzer(StepRunner):
 
     def step_frames(self) -> str:
         frames_dir = self.doc.root / "images"
-        if frames_dir.exists():
-            shutil.rmtree(frames_dir)
-        frames_dir.mkdir()
+        existing = sorted(frames_dir.glob("img_*.jpg")) if frames_dir.exists() else []
         if not self.doc.state.metrics.get("height"):
+            shutil.rmtree(frames_dir, ignore_errors=True)
             return "Pas d'image (fichier audio)"
-        extract_frame(self.doc.state.path, self.duration * 0.1, self.doc.root / "vignette.jpg", width=320)
+        if not Path(self.doc.state.path).is_file():
+            if existing:
+                return f"Fichier d'origine introuvable : les {len(existing)} images précédentes sont conservées"
+            self.source()  # lève une erreur explicite
+        tmp_dir = self.doc.root / "images.tmp"
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        tmp_dir.mkdir()
         count = int(min(40, max(8, self.duration / 15)))
         done = 0
         for i in range(count):
             t = self.duration * (0.03 + 0.94 * i / max(1, count - 1))
-            if extract_frame(self.doc.state.path, t, frames_dir / f"img_{i:03d}_{t:08.1f}.jpg", width=480):
+            if extract_frame(self.doc.state.path, t, tmp_dir / f"img_{i:03d}_{t:08.1f}.jpg", width=480):
                 done += 1
             self.progress("frames", (i + 1) / count)
+        if not done:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            if existing:
+                return f"Extraction impossible : les {len(existing)} images précédentes sont conservées"
+            raise RuntimeError("Impossible d'extraire des images de cette vidéo.")
+        shutil.rmtree(frames_dir, ignore_errors=True)
+        tmp_dir.rename(frames_dir)
+        thumb_tmp = self.doc.root / "vignette.tmp.jpg"
+        if extract_frame(self.doc.state.path, self.duration * 0.1, thumb_tmp, width=320):
+            thumb_tmp.replace(self.doc.root / "vignette.jpg")
         return f"{done} images"
 
     def step_transcribe(self) -> str:
@@ -435,12 +519,16 @@ class ReferenceAnalyzer(StepRunner):
             )
         lines = build_lines(words, levels)
         self.doc.write_json("transcription.json", {"lines": lines})
-        self.doc.set_metrics(words_per_min=round(len(words) / max(self.duration / 60, 0.01)))
+        self.doc.set_metrics(
+            words_per_min=round(len(words) / max(self.duration / 60, 0.01)),
+            speech_ratio=round(speech_ratio(words, self.duration), 2),
+        )
         return f"{len(words)} mots"
 
     def step_analyze(self) -> str:
         lines = self.doc.read_json("transcription.json", {"lines": []})["lines"]
         sfx = self.doc.read_json("bruitages.json", {"hits": []})
+        self.progress("analyze", 0.05, "Analyse du style…")
         if claude_available(self.cfg):
             analysis = self.analyze_with_claude(lines, sfx)
         else:
@@ -501,8 +589,8 @@ class ReferenceAnalyzer(StepRunner):
 
 
 # ---------------------------------------------------------------- guide
-def _mean(values: list[float]) -> float | None:
-    values = [v for v in values if v]
+def _mean(values: list) -> float | None:
+    values = [v for v in values if v is not None]
     return round(statistics.mean(values), 1) if values else None
 
 
@@ -513,26 +601,32 @@ def _round_half(x: float) -> float:
 def measured_summary(docs: list[ReferenceDoc]) -> tuple[str, dict]:
     metrics = [d.state.metrics for d in docs]
     durations = [m["duration_min"] for m in metrics if m.get("duration_min")]
-    cuts = _mean([m.get("cuts_per_min", 0) for m in metrics])
-    shot = _mean([m.get("median_shot", 0) for m in metrics])
+    videos = [m for m in metrics if m.get("height")]  # le rythme n'a de sens que pour une vraie vidéo
+    cuts = _mean([m.get("cuts_per_min", 0) for m in videos])
+    shot = _mean([m.get("median_shot") for m in videos])
+    ratios = [m["speech_ratio"] for m in metrics if m.get("speech_ratio") is not None]
+    speech = round(statistics.mean(ratios), 2) if ratios else None  # une part : pas d'arrondi au dixième
     checked = [m for m in metrics if m.get("sfx_checked")]
-    sfx_rate = _mean([m.get("sfx_per_min", 0) for m in checked]) if checked else None
+    sfx_rate = _mean([m.get("sfx_per_min", 0) for m in checked])
     top: Counter = Counter()
+    music: Counter = Counter()
     for m in checked:
         for asset, n in m.get("sfx_top") or []:
             top[asset] += n
+        music.update(m.get("music_used") or [])
     lines = []
     if durations:
         lines.append(f"- Durée : {min(durations):g} à {max(durations):g} min (moyenne {statistics.mean(durations):.1f}).")
-    if cuts:
+    if videos:
         lines.append(f"- Rythme : {cuts:g} changements de plan par minute, plan médian {shot:g} s.")
+    if speech is not None:
+        lines.append(f"- Parole : {round(speech * 100)} % du temps.")
     if checked:
-        lines.append(f"- Bruitages de la bibliothèque reconnus : {sfx_rate or 0:g} par minute.")
+        lines.append(f"- Bruitages de la bibliothèque reconnus : au moins {sfx_rate or 0:g} par minute.")
         if top:
             lines.append("- Les plus utilisés : " + ", ".join(f"{a} ({n}×)" for a, n in top.most_common(8)) + ".")
-    music = Counter(a for m in metrics for a in m.get("music_used") or [])
-    if music:
-        lines.append("- Musiques reconnues : " + ", ".join(a for a, _ in music.most_common(5)) + ".")
+        if music:
+            lines.append("- Musiques reconnues : " + ", ".join(a for a, _ in music.most_common(5)) + ".")
     return "\n".join(lines), {"durations": durations, "sfx_rate": sfx_rate, "sfx_checked": bool(checked)}
 
 
@@ -546,9 +640,10 @@ def suggested_style(analyses: list[tuple[ReferenceDoc, dict]], measured: dict, e
         out["target_min_minutes"] = float(max(3, round(lo - 1)))
         out["target_max_minutes"] = float(max(out["target_min_minutes"] + 2, round(hi + 1)))
         sources["target_min_minutes"] = sources["target_max_minutes"] = "mesuré"
-    if measured.get("sfx_checked") and measured.get("sfx_rate"):
+    # Seuls les sons de la bibliothèque, posés tels quels, sont reconnus : c'est un minimum.
+    if measured.get("sfx_checked") and _round_half(measured.get("sfx_rate") or 0) >= 0.5:
         out["sfx_per_minute"] = _round_half(measured["sfx_rate"])
-        sources["sfx_per_minute"] = "mesuré (bruitages de la bibliothèque seulement)"
+        sources["sfx_per_minute"] = "mesuré (au moins : seuls les sons de la bibliothèque sont reconnus)"
     per_video = [a.get("estimates") or {} for _, a in analyses]
     pooled = estimates or {}
     for field in ("zooms_per_minute", "texts_per_minute", "characters_per_minute"):
@@ -567,10 +662,10 @@ def suggested_style(analyses: list[tuple[ReferenceDoc, dict]], measured: dict, e
 
 def build_guide(store: ReferenceStore, cfg: AppConfig, log: Callable[[str], None] | None = None) -> dict:
     """(Re)construit le guide de style à partir de toutes les vidéos analysées."""
-    import json
-
     (store.root / "guide_erreur.txt").unlink(missing_ok=True)
-    analyses = store.analyses()
+    everything = store.analyses()
+    analyses = [(d, a) for d, a in everything if not too_long(d)]  # une vidéo de plus d'1 h est un rush
+    ignored = [d.state.name for d, _ in everything if too_long(d)]
     if not analyses:
         store.guide_md.unlink(missing_ok=True)
         store.guide_json.unlink(missing_ok=True)
@@ -607,11 +702,12 @@ def build_guide(store: ReferenceStore, cfg: AppConfig, log: Callable[[str], None
         "updated": datetime.now().isoformat(timespec="seconds"),
         "source": source,
         "sources": [d.id for d, _ in analyses],
+        "ignored": ignored,
         "examples": examples,
         "estimates": estimates,
         "measured": measured_text,
         "suggested": suggested_style(analyses, measured, estimates),
     }
-    store.guide_md.write_text(text.strip() + "\n", "utf-8")
-    store.guide_json.write_text(json.dumps(data, ensure_ascii=False, indent=1), "utf-8")
+    atomic_write(store.guide_md, text.strip() + "\n")
+    atomic_write(store.guide_json, json.dumps(data, ensure_ascii=False, indent=1))
     return data

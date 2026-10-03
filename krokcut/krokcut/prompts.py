@@ -48,12 +48,17 @@ répétitions, moments où il ne se passe rien, passages incompréhensibles hors
 l'écran par minute — à moduler selon l'énergie du passage (plus dense sur les moments forts, plus \
 sobre sur les passages qui racontent quelque chose)."""
     ]
+    if reference.strip():
+        parts.append(
+            "## Repères tirés des vidéos déjà montées et publiées par la chaîne\n"
+            "Ce guide résume comment l'équipe monte ses vidéos : suis-le pour choisir les moments et les effets. "
+            "En cas de contradiction, la bible de la chaîne et les consignes spécifiques ci-dessous priment.\n\n"
+            + reference.strip()
+        )
     if bible.strip():
         parts.append("## La chaîne, ses personnages et son humour (écrit par l'équipe)\n" + bible.strip())
     if style.notes.strip():
         parts.append("## Consignes spécifiques\n" + style.notes.strip())
-    if reference.strip():
-        parts.append("## Repères tirés des vidéos déjà publiées\n" + reference.strip())
     return "\n\n".join(parts)
 
 

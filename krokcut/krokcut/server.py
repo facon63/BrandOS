@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import string
+import tempfile
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -179,16 +180,26 @@ async def upload(filename: str, request: Request, folder: str = "rush"):
     else:
         dest_dir = workspace_dir() / "rush"
         dest_dir.mkdir(exist_ok=True)
-    dest = dest_dir / safe
-    n = 2
-    while dest.exists():  # ne jamais écraser un fichier déjà utilisé par un épisode
-        dest = dest_dir / f"{Path(safe).stem}-{n}{Path(safe).suffix}"
-        n += 1
-    tmp = dest.with_suffix(dest.suffix + ".part")
-    with open(tmp, "wb") as fh:
-        async for chunk in request.stream():
-            fh.write(chunk)
-    tmp.replace(dest)
+    # Réserve le nom de façon atomique : deux envois simultanés du même nom ne se mélangent jamais,
+    # et un fichier déjà utilisé par un épisode n'est jamais écrasé.
+    dest, n = dest_dir / safe, 2
+    while True:
+        try:
+            os.close(os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            break
+        except FileExistsError:
+            dest = dest_dir / f"{Path(safe).stem}-{n}{Path(safe).suffix}"
+            n += 1
+    fd, tmp = tempfile.mkstemp(dir=dest_dir, prefix=".envoi-", suffix=".part")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            async for chunk in request.stream():
+                fh.write(chunk)
+        os.replace(tmp, dest)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        dest.unlink(missing_ok=True)
+        raise
     return {"path": str(dest)}
 
 
@@ -451,16 +462,18 @@ class AddReferences(BaseModel):
 @app.post("/api/references")
 def add_references(data: AddReferences):
     store = ReferenceStore()
-    added = []
+    added, duplicates = [], []
     for path in data.paths:
         if not Path(path).is_file():
             raise HTTPException(400, f"Fichier introuvable : {path}")
     for path in data.paths:
-        doc = store.add(path)
+        doc, created = store.add_or_get(path)
+        if not created:
+            duplicates.append(doc.state.name)
         if doc.state.steps["analyze"].status != "done" and not jobs.busy(doc.id, "reference"):
             jobs.submit(doc.id, kind="reference")
         added.append(_reference_summary(doc))
-    return {"added": added}
+    return {"added": added, "duplicates": duplicates}
 
 
 def _reference(ref_id: str) -> ReferenceDoc:
@@ -482,10 +495,16 @@ def get_reference(ref_id: str):
 
 @app.post("/api/references/{ref_id}/run")
 def rerun_reference(ref_id: str, data: dict | None = None):
+    """Analyse terminée : refait seulement les bruitages et le style (bibliothèque ou bible changée).
+    Analyse incomplète : reprend là où elle s'est arrêtée. `from_step` force une relance plus large."""
     doc = _reference(ref_id)
-    from_step = (data or {}).get("from_step") or "sfx"  # par défaut : bibliothèque et style
-    if from_step not in REF_STEP_IDS:
+    from_step = (data or {}).get("from_step")
+    if from_step and from_step not in REF_STEP_IDS:
         raise HTTPException(400, "Étape inconnue")
+    if jobs.busy(doc.id, "reference"):
+        raise HTTPException(409, "Déjà en cours de traitement.")
+    if not from_step and all(st.status == "done" for st in doc.state.steps.values()):
+        doc.invalidate(["sfx", "analyze"])
     try:
         jobs.submit(doc.id, from_step=from_step, kind="reference")
     except RuntimeError as exc:
