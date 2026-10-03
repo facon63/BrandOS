@@ -52,6 +52,8 @@ sobre sur les passages qui racontent quelque chose)."""
         parts.append(
             "## Repères tirés des vidéos déjà montées et publiées par la chaîne\n"
             "Ce guide résume comment l'équipe monte ses vidéos : suis-le pour choisir les moments et les effets. "
+            "La durée et le rythme d'effets visés plus haut sont les réglages de cet épisode : ils font foi, "
+            "les chiffres de ce guide ne sont que des repères. "
             "En cas de contradiction, la bible de la chaîne et les consignes spécifiques ci-dessous priment.\n\n"
             + reference.strip()
         )
@@ -173,8 +175,10 @@ Analyse ce montage pour qu'un monteur puisse reproduire le style :
 - rules : 5 à 12 règles concrètes et actionnables (« Après une vanne, … », « Jamais de … »).
 - examples : 3 à 8 moments représentatifs : timecode, phrase recopiée de la transcription, pourquoi il est \
 gardé, effets utilisés.
-- estimates : estimations par minute (zooms, textes, apparitions de persos/memes), musique de fond (oui/non), \
-teaser d'ouverture (oui/non). Mets 0 si tu ne peux pas estimer.
+- estimates : estimations par minute (zooms, textes, apparitions de persos/memes ; 0 si tu ne peux pas \
+estimer), musique de fond et teaser d'ouverture : « oui », « non » ou « inconnu ». Tu n'entends pas le son : \
+pour la musique, réponds « inconnu » sauf si une musique reconnue est indiquée dans les mesures ou si les \
+images et la transcription le montrent clairement.
 {library_note}
 TRANSCRIPTION DE LA VIDÉO FINALE :
 {timeline}"""
@@ -186,8 +190,10 @@ Rédige le guide de style que suivra le monteur automatique sur les prochains é
 - guide : en markdown, 300 à 700 mots, avec ces sections : « Format et rythme », « Ce qu'on garde », \
 « Comment on monte » (zooms, textes, persos, POV), « Sound design », « Règles d'or ». Garde ce qui revient \
 d'une vidéo à l'autre ou qui est clairement voulu ; signale les vraies différences entre vidéos. Écris des \
-consignes directement applicables, pas une description.
+consignes directement applicables, pas une description. Ne fixe pas de chiffres cibles (durée, nombre \
+d'effets par minute) : ils sont réglés à part ; dis plutôt où l'équipe densifie ou allège les effets.
 - examples : 6 à 12 moments gardés parmi les plus parlants, avec la vidéo d'origine.
-- estimates : valeurs moyennes réalistes pour régler le monteur (0 si inconnu).
+- estimates : valeurs moyennes réalistes par minute (0 si inconnu) ; musique de fond et teaser d'ouverture : \
+« oui », « non » ou « inconnu » (musique : « inconnu » sauf si elle est mesurée ou clairement établie).
 
 {analyses}"""

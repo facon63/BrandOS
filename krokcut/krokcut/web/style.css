@@ -161,7 +161,8 @@ table.assets { width: 100%; border-collapse: collapse; margin-top: 12px; font-si
 .assets td.id { word-break: break-all; }
 .assets audio { height: 28px; width: 160px; }
 .assets img, .assets video { height: 40px; border-radius: 4px; background: repeating-conic-gradient(#333 0 25%, #222 0 50%) 0 0/10px 10px; }
-@media (max-width: 760px) { .assets th:nth-child(3), .assets td:nth-child(3), .assets th:nth-child(5), .assets td:nth-child(5) { display: none; } }
+/* Bibliothèque sur petit écran : on masque Perso et Durée (pas le tableau des réglages suggérés) */
+@media (max-width: 760px) { #view-library .assets th:nth-child(3), #view-library .assets td:nth-child(3), #view-library .assets th:nth-child(5), #view-library .assets td:nth-child(5) { display: none; } }
 
 dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius); width: min(720px, 94vw); padding: 0; }
 dialog::backdrop { background: rgba(0,0,0,.6); }
@@ -191,6 +192,7 @@ dialog::backdrop { background: rgba(0,0,0,.6); }
 .guide p { margin: 6px 0; }
 .guide ul { margin: 4px 0; padding-left: 20px; }
 table.suggest td:nth-child(3) { color: var(--croc); }
+table.suggest label.check { margin: 0; }
 #ref-uploads { margin: 0; }
 @media (max-width: 640px) {
   .ref { grid-template-columns: 1fr; }

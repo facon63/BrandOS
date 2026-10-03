@@ -24,7 +24,7 @@ from .jobs import JobManager
 from .library import Library
 from .llm import claude_available
 from .project import STEPS, Project
-from .references import REF_STEP_IDS, REF_STEPS, ReferenceDoc, ReferenceStore
+from .references import REF_STEP_IDS, REF_STEPS, ReferenceDoc, ReferenceStore, too_long
 
 WEB = Path(__file__).parent / "web"
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm", ".mts", ".ts", ".flv"}
@@ -50,6 +50,33 @@ def _project(project_id: str) -> Project:
         raise HTTPException(404, str(exc)) from exc
 
 
+def _queue_note(target: str, kind: str) -> str:
+    """Ce qu'attend un traitement en file d'attente, en clair (« après l'analyse de 2 vidéos… »)."""
+    ahead = jobs.waiting_for(target, kind)
+    if not ahead:
+        return ""
+    refs = sum(j.kind == "reference" for j in ahead)
+    parts = []
+    if refs:
+        other = "autre " if kind == "reference" else ""
+        count = "d'une" if refs == 1 else f"de {refs}"
+        parts.append(f"l'analyse {count} {other}vidéo{'s' if refs > 1 else ''} de « Mes vidéos »")
+    elif any(j.kind == "guide" for j in ahead):
+        parts.append("la mise à jour du guide de style")
+    episodes = [j.target for j in ahead if j.kind == "project"]
+    if len(episodes) == 1:
+        try:
+            parts.append(f"l'épisode « {Project.open(episodes[0]).state.name} »")
+        except FileNotFoundError:
+            parts.append("un autre épisode")
+    elif episodes:
+        parts.append(f"{len(episodes)} autres épisodes")
+    note = "après " + " et ".join(parts)
+    if kind == "project" and (refs or any(j.kind == "guide" for j in ahead)):
+        note += " : le guide de style à jour servira à ce montage"
+    return note
+
+
 def _summary(p: Project) -> dict:
     state = p.state
     return {
@@ -59,6 +86,7 @@ def _summary(p: Project) -> dict:
         "sources": {k: {"name": s.name, "files": s.files, "duration": s.duration} for k, s in state.sources.items()},
         "steps": [{"id": sid, "label": label, **state.steps[sid].model_dump()} for sid, label in STEPS],
         "busy": jobs.busy(state.id),
+        "queue_note": _queue_note(state.id, "project"),
         "last_error": state.last_error,
         "render_quality": state.render_quality,
         "use_claude": state.use_claude,
@@ -436,8 +464,10 @@ def _reference_summary(doc: ReferenceDoc) -> dict:
         "steps": [{"id": sid, "label": label, **state.steps[sid].model_dump()} for sid, label in REF_STEPS],
         "metrics": state.metrics,
         "busy": jobs.busy(state.id, "reference"),
+        "queue_note": _queue_note(state.id, "reference"),
         "last_error": state.last_error,
         "analysis_source": analysis.get("source") if analysis else None,
+        "claude_error": (analysis or {}).get("claude_error", ""),
         "has_thumb": (doc.root / "vignette.jpg").exists(),
     }
 
@@ -539,17 +569,34 @@ def reference_thumb(ref_id: str):
 
 @app.post("/api/guide/rebuild")
 def rebuild_guide():
-    jobs.submit_guide()
-    return {"ok": True}
+    """Met à jour le guide. Avec une clé Claude, les vidéos analysées sans Claude (pas de clé à
+    l'époque, ou Claude indisponible) sont d'abord relues par Claude ; le guide suit tout seul."""
+    store = ReferenceStore()
+    reanalysing = 0
+    if claude_available(AppConfig.load()):
+        for doc, analysis in store.analyses():
+            if analysis.get("source") != "claude" and not too_long(doc) and not jobs.busy(doc.id, "reference"):
+                jobs.submit(doc.id, from_step="analyze", kind="reference")
+                reanalysing += 1
+    if not reanalysing:
+        jobs.submit_guide()
+    return {"ok": True, "reanalysing": reanalysing}
+
+
+class ApplyGuide(BaseModel):
+    fields: list[str] | None = None  # réglages cochés ; par défaut, ceux qui sont mesurés
 
 
 @app.post("/api/guide/apply")
-def apply_guide_style():
+def apply_guide_style(data: ApplyGuide | None = None):
     """Reporte les réglages suggérés par les vidéos publiées dans le style par défaut."""
     guide = ReferenceStore().guide()
-    values = ((guide or {}).get("suggested") or {}).get("values") or {}
+    suggested = (guide or {}).get("suggested") or {}
+    values = suggested.get("values") or {}
+    fields = data.fields if data and data.fields is not None else suggested.get("checked", list(values))
+    values = {k: v for k, v in values.items() if k in fields}
     if not values:
-        raise HTTPException(400, "Aucun réglage suggéré pour l'instant.")
+        raise HTTPException(400, "Aucun réglage choisi.")
     style = StyleProfile.model_validate({**StyleProfile.load().model_dump(), **values})
     style.save(StyleProfile.default_path())
     return style.model_dump()

@@ -86,6 +86,16 @@ class JobManager:
         with self._lock:
             return self._busy_locked(target, kind)
 
+    def waiting_for(self, target: str, kind: JobKind = "project") -> list[Job]:
+        """Traitements qui passeront avant celui-ci (celui en cours compris), s'il est en file d'attente."""
+        with self._lock:
+            mine = next((j for j in self.pending if j.target == target and j.kind == kind), None)
+            if mine is None:
+                return []
+            key = lambda j: (PRIORITY[j.kind], j.seq)  # noqa: E731
+            ahead = sorted((j for j in self.pending if key(j) < key(mine)), key=key)
+            return ([self.current] if self.current else []) + ahead
+
     def any_busy(self, kind: JobKind) -> bool:
         with self._lock:
             return bool((self.current and self.current.kind == kind) or any(j.kind == kind for j in self.pending))

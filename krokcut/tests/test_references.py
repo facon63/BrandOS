@@ -230,7 +230,8 @@ def test_reference_analysis_offline(workspace, library_dir, published):
     assert "sfx/boing_cartoon (3×)" in store.guide_md.read_text("utf-8")
     assert data["suggested"]["values"]["sfx_per_minute"] > 0
     block = store.prompt_block()
-    assert "mais t'es nul" in block and "Mesures sur vos vidéos publiées" in block
+    assert "mais t'es nul" in block and "Format et rythme" in block
+    assert block.count("- Durée") == 1  # les mesures ne sont pas répétées deux fois
 
     # le dérush d'un épisode en tient compte
     project = Project.create("Ep", [str(published["path"])], [str(published["path"])])
@@ -254,14 +255,14 @@ def fake_ask_json(self, *, system, content, schema, effort="medium", max_tokens=
             "sound_design": "Boing après chaque chute.",
             "rules": ["Après une chute, zoom + boing."],
             "examples": [{"time": "0:03", "quote": "mais t'es nul", "why_kept": "vanne", "effects": "boing + zoom"}],
-            "estimates": {"zooms_per_minute": 5.2, "texts_per_minute": 1.0, "characters_per_minute": 0, "has_music": False, "cold_open": True},
+            "estimates": {"zooms_per_minute": 5.2, "texts_per_minute": 1.0, "characters_per_minute": 0, "has_music": "inconnu", "cold_open": "oui"},
         }
     if label == "guide":
         assert "Ils ratent des sauts." in content
         return {
             "guide": "## Format et rythme\n- Court et nerveux.\n\n## Règles d'or\n- **Toujours** un boing après une chute.",
             "examples": [{"video": "episode_publie", "time": "0:03", "quote": "mais t'es nul", "why_kept": "vanne", "effects": "boing"}],
-            "estimates": {"zooms_per_minute": 5.0, "texts_per_minute": 1.0, "characters_per_minute": 0, "has_music": False, "cold_open": True},
+            "estimates": {"zooms_per_minute": 5.0, "texts_per_minute": 1.0, "characters_per_minute": 0, "has_music": "non", "cold_open": "oui"},
         }
     raise AssertionError(label)
 
@@ -281,7 +282,8 @@ def test_reference_analysis_with_claude_and_apply(workspace, library_dir, publis
     values, sources = data["suggested"]["values"], data["suggested"]["sources"]
     assert values["zooms_per_minute"] == 5.0 and sources["zooms_per_minute"].startswith("estimé")
     assert values["sfx_per_minute"] > 0 and sources["sfx_per_minute"].startswith("mesuré")
-    assert values["cold_open"] is True and values["music"] is False
+    assert values["cold_open"] is True and "music" not in values  # Claude n'entend pas : jamais « pas de musique »
+    assert set(data["suggested"]["checked"]) == {"target_min_minutes", "target_max_minutes", "sfx_per_minute"}
     assert "Toujours" in store.prompt_block()
 
     monkeypatch.setattr(server, "jobs", JobManager(start=False))
@@ -290,9 +292,12 @@ def test_reference_analysis_with_claude_and_apply(workspace, library_dir, publis
     assert listing["guide"]["text"].startswith("## Format") and listing["references"][0]["analysis_source"] == "claude"
     detail = client.get(f"/api/references/{doc.id}").json()
     assert detail["analysis"]["rules"] == ["Après une chute, zoom + boing."]
-    applied = client.post("/api/guide/apply").json()
+    applied = client.post("/api/guide/apply").json()  # par défaut : seulement ce qui est mesuré
+    assert applied["sfx_per_minute"] == values["sfx_per_minute"] and applied["zooms_per_minute"] == 4.0
+    applied = client.post("/api/guide/apply", json={"fields": ["zooms_per_minute"]}).json()
     assert applied["zooms_per_minute"] == 5.0
     assert StyleProfile.load().zooms_per_minute == 5.0
+    assert client.post("/api/guide/apply", json={"fields": []}).status_code == 400
 
 
 # ------------------------------------------------------------------- API
@@ -509,3 +514,138 @@ def test_guide_precedence_and_corrupt_guide(workspace, library_dir, published, m
     assert "Repères tirés" not in Pipeline(project, cfg).system_prompt()
     monkeypatch.setattr(server, "jobs", JobManager(start=False))
     assert TestClient(server.app).get("/api/references").status_code == 200
+
+
+def fake_refs(store, published, specs):
+    """Références factices : seules leurs mesures (et leur analyse) comptent."""
+    docs = []
+    for i, (metrics, analysis) in enumerate(specs):
+        src = published["path"].parent / f"fausse{i}.wav"
+        src.write_bytes((published["path"].parent / "son.wav").read_bytes() + bytes([i, 7]))
+        doc = store.add(src, name=f"video{i}")
+        doc.set_metrics(height=1080, cuts_per_min=10.0, median_shot=4.0, **metrics)
+        if analysis is not None:
+            doc.write_json("analyse.json", analysis)
+            doc.set_step("analyze", status="done")
+        docs.append(doc)
+    return docs
+
+
+def test_suggestions_ignore_outliers_and_unknowns(workspace, published):
+    from krokcut.references import duration_targets, flag, measured_summary, suggested_style
+
+    assert duration_targets([12, 13, 14]) == (11.0, 15.0)
+    assert duration_targets([10, 12, 14, 40]) == (10.0, 22.0)  # une vidéo très longue n'étire pas la fourchette
+    assert duration_targets([55, 59]) == (54.0, 60.0)
+    assert flag("oui") is True and flag("non") is False and flag("inconnu") is None
+    assert flag(False) is None  # anciennes analyses : « false » voulait aussi dire « je ne sais pas »
+
+    store = ReferenceStore()
+    claude = lambda **est: {"source": "claude", "rules": [], "examples": [], "estimates": est}  # noqa: E731
+    docs = fake_refs(
+        store,
+        published,
+        [
+            ({"duration_min": 0.9, "sfx_checked": True, "sfx_per_min": 30.0}, claude(texts_per_minute=9, has_music="non", cold_open="non")),
+            ({"duration_min": 12, "sfx_checked": True, "sfx_per_min": 4.0}, claude(texts_per_minute=0.2, has_music="non", cold_open="oui")),
+            ({"duration_min": 14, "sfx_checked": True, "sfx_per_min": 2.0}, claude(texts_per_minute=0.2, has_music="inconnu", cold_open="inconnu")),
+        ],
+    )
+    text, measured = measured_summary(docs)
+    assert measured["durations"] == [12, 14] and measured["shorts"] == ["video0"]  # le Short ne compte pas
+    assert "au moins 3 par minute" in text and "video0" in text
+    analyses = [(d, d.read_json("analyse.json")) for d in docs]
+    out = suggested_style(analyses, measured, None)
+    values = out["values"]
+    assert (values["target_min_minutes"], values["target_max_minutes"]) == (11.0, 15.0)
+    assert values["texts_per_minute"] == 0.2  # « rarement » ne devient pas « jamais »
+    assert "music" not in values  # deux « non » vus à l'image : pas de quoi couper la musique
+    assert values["cold_open"] is True  # le Short ne vote pas, l'inconnu non plus
+    assert "texts_per_minute" not in out["checked"] and "cold_open" not in out["checked"]
+
+    docs[2].set_metrics(music_used=["music/generique"])
+    _, measured = measured_summary(docs)
+    out = suggested_style(analyses, measured, None)
+    assert out["values"]["music"] is True and "music" in out["checked"]
+
+
+def test_claude_failure_falls_back_to_measurements(workspace, library_dir, published, monkeypatch):
+    from krokcut.llm import LLMError
+
+    cfg = setup_cfg(library_dir)
+    store = ReferenceStore()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setattr(LLM, "ask_json", fake_ask_json)
+    doc = analysed(store, cfg, published)
+    assert build_guide(store, cfg)["source"] == "claude"
+
+    def down(self, **kwargs):
+        raise LLMError("Limite de débit de l'API atteinte : réessaie dans quelques minutes.")
+
+    monkeypatch.setattr(LLM, "ask_json", down)
+    data = build_guide(store, cfg)  # le guide n'est jamais laissé périmé
+    assert data["source"] == "heuristic" and "Limite de débit" in data["claude_error"] and data["sources"] == [doc.id]
+    assert "Toujours" not in store.prompt_block()
+
+    assert ReferenceAnalyzer(doc, cfg, store, words_provider=lambda pcm, levels: published["words"]).run(from_step="analyze")
+    doc = store.open(doc.id)
+    analysis = doc.read_json("analyse.json")
+    assert analysis["source"] == "heuristic" and "Limite de débit" in analysis["claude_error"]
+    assert "Réanalyser" in doc.state.steps["analyze"].message
+    assert [d.id for d, _ in store.analyses()] == [doc.id]  # la vidéo compte toujours
+
+
+def test_rebuild_reanalyses_with_claude_and_queue_is_explained(workspace, library_dir, published, monkeypatch):
+    from krokcut import server
+
+    cfg = setup_cfg(library_dir)
+    store = ReferenceStore()
+    doc = analysed(store, cfg, published)  # sans clé : mesures seules
+    manager = JobManager(start=False)
+    monkeypatch.setattr(server, "jobs", manager)
+    client = TestClient(server.app)
+    assert client.post("/api/guide/rebuild").json()["reanalysing"] == 0  # pas de clé : simple mise à jour
+    assert [j.kind for j in manager.pending] == ["guide"]
+    manager.pending.clear()
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    assert client.post("/api/guide/rebuild").json()["reanalysing"] == 1
+    assert [(j.kind, j.target, j.from_step) for j in manager.pending] == [("reference", doc.id, "analyze")]
+
+    project = Project.create("Ep", [str(published["path"])], [str(published["path"])])
+    manager.submit(project.id)
+    note = client.get(f"/api/projects/{project.id}").json()["queue_note"]
+    assert "l'analyse d'une vidéo de « Mes vidéos »" in note and "guide de style" in note
+    assert client.get("/api/references").json()["references"][0]["queue_note"] == ""
+
+
+def test_legacy_notes_guide_header_and_authoritative_settings(workspace, library_dir, published, monkeypatch):
+    from krokcut import references
+    from krokcut.config import workspace_dir
+
+    cfg = setup_cfg(library_dir)
+    store = ReferenceStore()
+    project = Project.create("Ep", [str(published["path"])], [str(published["path"])])
+    legacy = workspace_dir() / "references.md"
+    legacy.write_text("Notes à la main.\n<!-- analyse-auto:debut -->\n45 changements de plan par minute. Vise ce rythme.\n<!-- analyse-auto:fin -->\n", "utf-8")
+    assert "Vise ce rythme" in Pipeline(project, cfg).reference_notes()  # pas encore de guide : l'ancienne analyse sert
+    doc = analysed(store, cfg, published)
+    build_guide(store, cfg)
+    notes = Pipeline(project, cfg).reference_notes()
+    assert "Notes à la main" in notes and "Vise ce rythme" not in notes
+    assert "font foi" in Pipeline(project, cfg).system_prompt()
+
+    doc.set_metrics(sfx_checked=False)
+    assert "bruitages non vérifiés" in references._guide_block(doc, doc.read_json("analyse.json"))
+
+    # Trop de vidéos pour une seule relecture : la plus ancienne n'est pas envoyée, et c'est dit
+    src = published["path"].parent / "episode_bis.mp4"
+    src.write_bytes(published["path"].read_bytes() + b"\0")
+    second = store.add(src, name="bis")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setattr(LLM, "ask_json", fake_ask_json)
+    for d in (store.open(doc.id), second):
+        assert ReferenceAnalyzer(d, cfg, store, words_provider=lambda pcm, levels: published["words"]).run(from_step="analyze")
+    monkeypatch.setattr(references, "GUIDE_INPUT_MAX_CHARS", 10)
+    data = build_guide(store, cfg)
+    assert data["source"] == "claude" and data["claude_left_out"] == [doc.state.name] and len(data["sources"]) == 2

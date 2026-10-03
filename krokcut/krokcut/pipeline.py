@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from pathlib import Path
 from typing import Callable
@@ -81,7 +82,11 @@ class Pipeline(StepRunner):
         notes = ReferenceStore().prompt_block()
         legacy = workspace_dir() / "references.md"  # ancienne analyse en ligne de commande
         if legacy.exists():
-            notes = (notes + "\n\n" + legacy.read_text("utf-8")).strip()
+            text = legacy.read_text("utf-8", errors="replace")
+            if notes:  # le nouveau guide remplace l'ancienne analyse automatique ; on garde ce qui a été écrit à la main
+                text = re.sub(r"<!-- analyse-auto:debut -->.*?<!-- analyse-auto:fin -->", "", text, flags=re.S)
+            if text.strip():
+                notes = (notes + "\n\n" + text.strip()).strip()
         return notes
 
     def system_prompt(self) -> str:

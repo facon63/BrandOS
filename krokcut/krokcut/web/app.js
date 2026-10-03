@@ -36,9 +36,17 @@ function toast(msg, isError = false) {
 
 /* ------------------------------------------------------------------ onglets */
 $("#btn-quit").addEventListener("click", async () => {
-  const running = state.projects.some((p) => p.busy) || state.refsBusy;
-  const msg = running
-    ? "Un traitement est en cours : il sera interrompu (tu pourras le reprendre avec « Continuer »). Quitter KrokCut ?"
+  // État réel du serveur (pas celui du dernier onglet ouvert)
+  let episodes = state.projects.some((p) => p.busy);
+  let videos = false;
+  try {
+    const [projects, refs] = await Promise.all([api("/api/projects"), api("/api/references")]);
+    episodes = projects.some((p) => p.busy);
+    videos = refs.references.some((r) => r.busy) || refs.guide_busy;
+  } catch (_) { /* on garde ce qu'on sait */ }
+  const resume = [episodes ? "« Continuer » sur l'épisode" : "", videos ? "« Reprendre l'analyse » dans Mes vidéos" : ""].filter(Boolean).join(", ");
+  const msg = episodes || videos
+    ? `Un traitement est en cours : il sera interrompu (tu pourras le reprendre avec ${resume}). Quitter KrokCut ?`
     : "Quitter KrokCut ?";
   if (!confirm(msg)) return;
   try { await api("/api/quit", { method: "POST" }); } catch (_) { /* le serveur s'arrête */ }
@@ -64,7 +72,7 @@ async function loadProjects() {
   list.innerHTML = state.projects
     .map((p) => {
       const done = p.steps.filter((s) => s.status === "done").length;
-      const status = p.busy ? "⏳ en cours" : p.last_error ? "⚠️ erreur" : `${done}/${p.steps.length} étapes`;
+      const status = p.busy === "queued" ? "⏳ en file d'attente" : p.busy ? "⏳ en cours" : p.last_error ? "⚠️ erreur" : `${done}/${p.steps.length} étapes`;
       return `<li data-id="${esc(p.id)}" class="${state.current === p.id ? "active" : ""}">${esc(p.name)}<small>${esc(status)}</small></li>`;
     })
     .join("");
@@ -253,7 +261,7 @@ async function refreshProject(full = false) {
     .join("");
   const busy = p.busy;
   $("#pd-busy").classList.toggle("hidden", !busy);
-  $("#pd-busy").textContent = busy === "queued" ? "en file d'attente" : "traitement en cours";
+  $("#pd-busy").textContent = busy === "queued" ? `en file d'attente${p.queue_note ? ` (${p.queue_note})` : ""}` : "traitement en cours";
   $("#pd-cancel").classList.toggle("hidden", !busy);
   const allDone = p.steps.every((s) => s.status === "done");
   $("#pd-run").classList.toggle("hidden", !!busy || allDone);
@@ -599,10 +607,20 @@ async function checkClaude() {
 async function checkReferences() {
   try {
     const data = await api("/api/references");
-    const n = data.references.length;
+    const n = data.guide ? data.guide.sources.length : 0;
+    const failed = data.references.filter((r) => r.steps.some((s) => s.status === "error")).length;
+    const waiting = data.references.filter((r) => !r.steps.some((s) => s.status === "error") && !r.steps.every((s) => s.status === "done")).length;
+    const ignored = data.guide ? (data.guide.ignored || []).length : 0;
+    const extra = [
+      waiting ? `${waiting} en cours d'analyse ou à reprendre` : "",
+      failed ? `${failed} en erreur` : "",
+      ignored ? `${ignored} ignorée${ignored > 1 ? "s" : ""} car trop longue${ignored > 1 ? "s" : ""}` : "",
+    ].filter(Boolean).join(", ");
     $("#empty-refs").textContent = n
-      ? `🎓 ${n} vidéo${n > 1 ? "s" : ""} déjà montée${n > 1 ? "s" : ""} prise${n > 1 ? "s" : ""} en compte pour comprendre votre style.`
-      : "🎓 Astuce : dépose 3 à 5 de vos vidéos déjà montées dans l'onglet « Mes vidéos » pour que KrokCut apprenne votre style.";
+      ? `🎓 ${n} vidéo${n > 1 ? "s" : ""} déjà montée${n > 1 ? "s" : ""} prise${n > 1 ? "s" : ""} en compte pour comprendre votre style${extra ? ` (et ${extra})` : ""}.`
+      : data.references.length
+        ? `🎓 Vos vidéos déjà montées ne sont pas encore prises en compte (${extra || "analyse en attente"}) : voir l'onglet « Mes vidéos ».`
+        : "🎓 Astuce : dépose 3 à 5 de vos vidéos déjà montées dans l'onglet « Mes vidéos » pour que KrokCut apprenne votre style.";
   } catch (_) { /* pas grave */ }
 }
 
@@ -660,7 +678,14 @@ async function loadReferences() {
   if (state.refsBusy && !$("#view-references").classList.contains("hidden")) state.refTimer = setTimeout(loadReferences, 2000);
 }
 
+/** Ce qui change l'affichage d'une analyse : on ne la recharge que dans ce cas. */
+function refSignature(r) {
+  return JSON.stringify([r.steps.map((s) => s.status), r.analysis_source, r.metrics.sfx_top || []]);
+}
+
 function renderReferences(data) {
+  state.refData = data;
+  state.refDetails = state.refDetails || {};
   // vidéos
   $("#ref-list").innerHTML = data.references
     .slice()
@@ -669,16 +694,24 @@ function renderReferences(data) {
       const running = r.steps.find((s) => s.status === "running");
       const failed = r.steps.find((s) => s.status === "error");
       const done = r.steps.every((s) => s.status === "done");
+      const started = r.steps.some((s) => s.status !== "pending" || s.message);
       const halted = !running && !failed && !r.busy ? r.steps.find((s) => s.status === "pending" && s.message) : null;
-      const status = r.busy === "queued" ? "en file d'attente" : running ? running.label : failed ? "erreur" : done ? "analysée" : "en attente";
+      const status = r.busy === "queued"
+        ? "en file d'attente"
+        : running ? running.label
+          : failed ? "erreur"
+            : done ? (r.analysis_source === "claude" ? "analysée" : "analysée (mesures seules)")
+              : started ? "interrompue" : "pas encore analysée";
       const thumb = r.has_thumb
         ? `<img class="ref-thumb" loading="lazy" src="/api/references/${encodeURIComponent(r.id)}/thumb" alt="">`
         : `<div class="ref-thumb empty">🎞️</div>`;
+      const cached = state.refDetails[r.id];
       return `<li class="ref" data-id="${esc(r.id)}">
         ${thumb}
         <div class="ref-body">
           <div class="row space"><b>${esc(r.name)}</b><span class="pill ${failed ? "bad" : ""}">${esc(status)}</span></div>
           <div class="meta">${esc(refMetrics(r.metrics)) || "&nbsp;"}</div>
+          ${r.busy === "queued" && r.queue_note ? `<div class="msg">⏳ ${esc(r.queue_note)}</div>` : ""}
           ${running ? `<div class="msg">${esc(running.message || "")}</div><div class="bar"><i style="width:${Math.round(running.progress * 100)}%"></i></div>` : ""}
           ${failed ? `<div class="error">${esc(failed.label)} : ${esc(failed.message)}</div>` : ""}
           ${halted ? `<div class="msg">⏸ ${esc(halted.label)} : ${esc(halted.message)}</div>` : ""}
@@ -687,15 +720,20 @@ function renderReferences(data) {
             ${r.analysis_source ? `<button class="ghost small" data-ref-details="${esc(r.id)}">${state.refOpen.has(r.id) ? "Masquer l'analyse" : "Voir l'analyse"}</button>` : ""}
             ${r.busy ? `<button class="ghost small" data-ref-cancel="${esc(r.id)}">Annuler</button>` : (done
               ? `<button class="ghost small" data-ref-rerun="${esc(r.id)}" title="Refait la recherche des bruitages et l'analyse du style">Réanalyser</button>`
-              : `<button class="ghost small" data-ref-rerun="${esc(r.id)}">Reprendre l'analyse</button>`)}
+              : `<button class="ghost small" data-ref-rerun="${esc(r.id)}">${started ? "Reprendre l'analyse" : "Lancer l'analyse"}</button>`)}
             <button class="ghost small" data-ref-delete="${esc(r.id)}">Retirer</button>
           </div>
-          <div class="ref-details ${state.refOpen.has(r.id) ? "" : "hidden"}" id="ref-details-${esc(r.id)}"></div>
+          <div class="ref-details ${state.refOpen.has(r.id) ? "" : "hidden"}" id="ref-details-${esc(r.id)}">${cached ? cached.html : ""}</div>
         </div>
       </li>`;
     })
     .join("") || "";
-  state.refOpen.forEach((id) => { if (data.references.some((r) => r.id === id)) loadRefDetails(id); });
+  // Analyses ouvertes : rechargées seulement si la vidéo a changé (sinon la page sauterait à chaque rafraîchissement)
+  state.refOpen.forEach((id) => {
+    const r = data.references.find((x) => x.id === id);
+    const cached = state.refDetails[id];
+    if (r && (!cached || cached.sig !== refSignature(r))) loadRefDetails(id, refSignature(r));
+  });
 
   $$("[data-ref-details]").forEach((b) => b.addEventListener("click", () => {
     const id = b.dataset.refDetails;
@@ -719,14 +757,26 @@ function renderReferences(data) {
   // guide
   const g = data.guide;
   $("#guide-card").classList.toggle("hidden", !g && !data.guide_busy && !data.guide_error);
-  $("#guide-error").classList.toggle("hidden", !data.guide_error);
-  $("#guide-error").textContent = data.guide_error ? `La mise à jour du guide a échoué : ${data.guide_error}` : "";
+  const problems = [
+    data.guide_error ? `La mise à jour du guide a échoué : ${data.guide_error}` : "",
+    g && g.claude_error ? `Claude n'a pas pu rédiger le guide (${g.claude_error}) : en attendant, il est tiré des mesures seules. Clique sur « Mettre à jour » pour réessayer.` : "",
+  ].filter(Boolean).join("\n");
+  $("#guide-error").classList.toggle("hidden", !problems);
+  $("#guide-error").textContent = problems;
   const n = g ? g.sources.length : 0;
+  const plural = (k, word) => `${word}${k > 1 ? "s" : ""}`;
+  const how = !g ? ""
+    : g.source === "claude" ? "rédigé par Claude"
+      : data.claude ? "mesures seules : clique sur « Mettre à jour » pour que Claude relise les vidéos"
+        : "mesures seules (ajoute une clé Claude dans Réglages pour un vrai guide)";
+  const notes = [];
+  if (g && (g.ignored || []).length) notes.push(`${plural(g.ignored.length, "ignorée")} car trop ${plural(g.ignored.length, "longue")} (plus d'1 h, sûrement des rush) : ${g.ignored.join(", ")}`);
+  if (g && (g.shorts || []).length) notes.push(`${plural(g.shorts.length, "vidéo")} de moins de 3 min (Shorts ?) non ${plural(g.shorts.length, "comptée")} dans les durées et rythmes : ${g.shorts.join(", ")}`);
+  if (g && (g.claude_left_out || []).length) notes.push(`les ${g.claude_left_out.length} plus anciennes n'ont pas été relues par Claude (trop de vidéos d'un coup)`);
   $("#guide-meta").textContent = data.guide_busy
     ? "Mise à jour du guide en cours…"
     : g
-      ? `Tiré de ${n} vidéo${n > 1 ? "s" : ""} · ${g.source === "claude" ? "rédigé par Claude" : "mesures seules (ajoute une clé Claude pour un vrai guide)"} · mis à jour le ${new Date(g.updated).toLocaleString("fr-FR")}` +
-        ((g.ignored || []).length ? ` · ignorée${g.ignored.length > 1 ? "s" : ""} car trop longue${g.ignored.length > 1 ? "s" : ""} (plus d'1 h, sûrement des rush) : ${g.ignored.join(", ")}` : "")
+      ? `Tiré de ${n} ${plural(n, "vidéo")} · ${how} · mis à jour le ${new Date(g.updated).toLocaleString("fr-FR")}` + notes.map((x) => ` · ${x}`).join("")
       : "";
   $("#guide-rebuild").disabled = data.guide_busy;
   $("#guide-text").innerHTML = g ? miniMarkdown(g.text) : "";
@@ -738,29 +788,31 @@ function renderReferences(data) {
   const suggested = (g && g.suggested) || { values: {}, sources: {} };
   const keys = Object.keys(suggested.values || {});
   $("#guide-suggest-box").classList.toggle("hidden", !keys.length);
-  if (keys.length) {
+  // Le tableau n'est refait que si les suggestions changent : les cases cochées à la main restent
+  const sig = JSON.stringify(suggested);
+  if (keys.length && sig !== state.suggestSig) {
+    state.suggestSig = sig;
+    const checked = new Set(suggested.checked || keys);
     api("/api/style").then((current) => {
       const show = (v) => (typeof v === "boolean" ? (v ? "oui" : "non") : v);
       $("#guide-suggest").innerHTML = keys
-        .map((k) => `<tr><td>${esc(SUGGEST_LABELS[k] || k)}</td><td>${esc(show(current[k]))}</td><td><b>${esc(show(suggested.values[k]))}</b></td><td class="muted">${esc(suggested.sources[k] || "")}</td></tr>`)
+        .map((k) => `<tr><td><label class="check"><input type="checkbox" data-suggest="${esc(k)}" ${checked.has(k) ? "checked" : ""}> ${esc(SUGGEST_LABELS[k] || k)}</label></td><td>${esc(show(current[k]))}</td><td><b>${esc(show(suggested.values[k]))}</b></td><td class="muted">${esc(suggested.sources[k] || "")}</td></tr>`)
         .join("");
-    });
+    }).catch(() => { state.suggestSig = null; });
   }
   $("#ref-lib-hint").textContent = data.claude
     ? "Les bruitages ne sont reconnus que s'ils sont dans la bibliothèque (onglet Bibliothèque)."
     : "⚠️ Sans clé Claude (Réglages), KrokCut ne tirera que des mesures de ces vidéos (rythme, bruitages), pas le style.";
 }
 
-async function loadRefDetails(id) {
-  const box = $(`#ref-details-${CSS.escape(id)}`);
-  if (!box) return;
+async function loadRefDetails(id, sig) {
   let r;
   try { r = await api(`/api/references/${encodeURIComponent(id)}`); } catch (_) { return; }
   const a = r.analysis;
-  if (!a) { box.innerHTML = "<p class='muted'>Pas encore d'analyse.</p>"; return; }
   const section = (title, text) => (text ? `<h4>${title}</h4><p>${esc(text)}</p>` : "");
   const top = (r.metrics.sfx_top || []).map(([asset, count]) => `<span class="badge">${esc(asset)} ×${count}</span>`).join(" ");
-  box.innerHTML = [
+  const html = !a ? "<p class='muted'>Pas encore d'analyse.</p>" : [
+    a.claude_error ? `<p class="muted">⚠️ Claude n'a pas répondu (${esc(a.claude_error)}) : analyse tirée des mesures seules. « Réanalyser » pour réessayer.</p>` : "",
     section("Résumé", a.summary),
     section("Structure", a.structure),
     section("Ce qui est gardé", a.humor),
@@ -772,6 +824,9 @@ async function loadRefDetails(id) {
       ? `<h4>Moments représentatifs</h4><ul>${a.examples.map((e) => `<li><span class="badge">${esc(e.time)}</span> « ${esc(e.quote)} » <span class="muted">— ${esc(e.why_kept)}${e.effects ? ` · ${esc(e.effects)}` : ""}</span></li>`).join("")}</ul>`
       : "",
   ].join("") || "<p class='muted'>Analyse vide.</p>";
+  state.refDetails[id] = { sig: sig || refSignature(r), html };
+  const box = $(`#ref-details-${CSS.escape(id)}`);
+  if (box) box.innerHTML = html;
 }
 
 async function addReferencePaths(paths) {
@@ -821,13 +876,19 @@ refDrop.addEventListener("drop", async (e) => {
 });
 $("#ref-browse").addEventListener("click", () => openBrowser(addReferencePaths));
 $("#guide-rebuild").addEventListener("click", async () => {
-  await api("/api/guide/rebuild", { method: "POST" });
+  try {
+    const res = await api("/api/guide/rebuild", { method: "POST" });
+    if (res.reanalysing) toast(`Claude relit ${res.reanalysing} vidéo${res.reanalysing > 1 ? "s" : ""} analysée${res.reanalysing > 1 ? "s" : ""} sans lui : le guide sera mis à jour ensuite.`);
+  } catch (err) { toast(err.message, true); }
   loadReferences();
 });
 $("#guide-apply").addEventListener("click", async () => {
-  if (!confirm("Remplacer ces réglages du style par défaut (utilisé pour les nouveaux épisodes) ?")) return;
+  const fields = $$("[data-suggest]").filter((c) => c.checked).map((c) => c.dataset.suggest);
+  if (!fields.length) return toast("Coche au moins un réglage à appliquer.", true);
+  if (!confirm(`Remplacer ${fields.length > 1 ? `ces ${fields.length} réglages` : "ce réglage"} du style par défaut (utilisé pour les nouveaux épisodes) ?`)) return;
   try {
-    await api("/api/guide/apply", { method: "POST" });
+    await api("/api/guide/apply", { method: "POST", body: { fields } });
+    state.suggestSig = null;
     toast("Style par défaut mis à jour : il s'appliquera aux prochains épisodes.");
     loadReferences();
   } catch (err) {
