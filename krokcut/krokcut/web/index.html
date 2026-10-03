@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KrokCut</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Ctext y=%27.9em%27 font-size=%2790%27%3E%F0%9F%90%8A%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo">🐊</span> KrokCut <small>dérush &amp; montage auto · Krok et Mil</small></div>
+    <nav>
+      <button class="tab active" data-view="projects">Épisodes</button>
+      <button class="tab" data-view="library">Bibliothèque</button>
+      <button class="tab" data-view="settings">Réglages</button>
+    </nav>
+  </header>
+
+  <div id="banner" class="banner hidden"></div>
+
+  <!-- ============================================================ ÉPISODES -->
+  <main id="view-projects" class="view">
+    <aside class="sidebar">
+      <button id="btn-new" class="primary wide">+ Nouvel épisode</button>
+      <ul id="project-list" class="project-list"></ul>
+    </aside>
+
+    <section class="content">
+      <!-- Nouveau projet -->
+      <div id="new-project" class="card hidden">
+        <h2>Nouvel épisode</h2>
+        <label>Nom de l'épisode <input id="np-name" placeholder="ex. On teste le pire jeu de Steam"></label>
+        <div class="pov-grid">
+          <div class="pov" data-pov="a">
+            <h3>POV A</h3>
+            <label>Qui filme ? <input id="np-name-a" value="Krok"></label>
+            <div class="dropzone" data-pov="a">Glisse le rush ici<br><small>(copie le fichier dans l'espace de travail)</small></div>
+            <button class="ghost small" data-browse="a">📁 Choisir sur le disque (sans copie)</button>
+            <ul class="file-list" id="files-a"></ul>
+          </div>
+          <div class="pov" data-pov="b">
+            <h3>POV B</h3>
+            <label>Qui filme ? <input id="np-name-b" value="Mil"></label>
+            <div class="dropzone" data-pov="b">Glisse le rush ici<br><small>(copie le fichier dans l'espace de travail)</small></div>
+            <button class="ghost small" data-browse="b">📁 Choisir sur le disque (sans copie)</button>
+            <ul class="file-list" id="files-b"></ul>
+          </div>
+        </div>
+        <p class="hint">Si une caméra a découpé l'enregistrement en plusieurs fichiers, ajoute-les tous dans l'ordre : ils seront recollés.</p>
+        <div class="row">
+          <label>Durée min (minutes) <input id="np-min" type="number" min="1" step="0.5"></label>
+          <label>Durée max (minutes) <input id="np-max" type="number" min="1" step="0.5"></label>
+        </div>
+        <label class="check"><input id="np-pause" type="checkbox"> Faire une pause après la sélection des moments pour la valider avant le montage</label>
+        <div class="row end">
+          <button class="ghost" id="np-cancel">Annuler</button>
+          <button class="primary" id="np-start">🚀 Lancer le dérush</button>
+        </div>
+      </div>
+
+      <!-- Détail d'un projet -->
+      <div id="project-detail" class="hidden">
+        <div class="card">
+          <div class="row space">
+            <div>
+              <h2 id="pd-name"></h2>
+              <p class="muted" id="pd-sources"></p>
+            </div>
+            <div class="row">
+              <span id="pd-busy" class="pill hidden"></span>
+              <button class="ghost" id="pd-cancel">Annuler</button>
+              <button class="primary" id="pd-run">Continuer</button>
+            </div>
+          </div>
+          <div id="pd-error" class="error hidden"></div>
+          <ol id="pd-steps" class="steps"></ol>
+          <details class="tools">
+            <summary>Outils avancés</summary>
+            <div class="row wrap">
+              <label>Relancer depuis l'étape
+                <select id="pd-from"></select>
+              </label>
+              <button class="ghost" id="pd-rerun">Relancer</button>
+            </div>
+            <div class="row wrap">
+              <label>Décalage manuel B − A (s)
+                <input id="pd-offset" type="number" step="0.01" placeholder="auto">
+              </label>
+              <button class="ghost" id="pd-offset-apply">Appliquer et resynchroniser</button>
+            </div>
+            <p class="hint">Décalage = (instant du clap dans la vidéo B) − (instant du clap dans la vidéo A). Laisse vide pour la synchro automatique.</p>
+            <label class="check"><input id="pd-claude" type="checkbox" checked> Utiliser Claude (sinon mode hors ligne basé sur les pics sonores)</label>
+            <pre id="pd-log" class="log"></pre>
+          </details>
+        </div>
+
+        <div id="pd-result" class="card hidden">
+          <h2>Résultat</h2>
+          <video id="pd-video" controls preload="metadata"></video>
+          <div class="row wrap" id="pd-downloads"></div>
+          <div class="row wrap">
+            <button class="primary" id="pd-final">🎬 Rendu final pleine qualité</button>
+            <button class="ghost" id="pd-preview">Rendu aperçu rapide</button>
+          </div>
+        </div>
+
+        <div id="pd-review" class="card hidden">
+          <div class="row space">
+            <div>
+              <h2>Sélection des moments</h2>
+              <p class="muted">Coche, décoche et réordonne les moments, puis relance le montage. La durée est estimée après suppression des blancs.</p>
+            </div>
+            <div class="total"><span id="rv-total">0:00</span><small id="rv-target"></small></div>
+          </div>
+          <div id="rv-cold" class="cold"></div>
+          <div class="row">
+            <label class="check"><input id="rv-only" type="checkbox"> N'afficher que les moments retenus</label>
+          </div>
+          <ul id="rv-list" class="moments"></ul>
+          <div class="row end">
+            <button class="primary" id="rv-save">✂️ Enregistrer et remonter</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="empty" class="card empty">
+        <h2>Salut 👋</h2>
+        <p>Crée un épisode, dépose les deux POV, et KrokCut s'occupe du reste :</p>
+        <ol>
+          <li>synchronisation des deux caméras,</li>
+          <li>transcription de tout ce qui se dit,</li>
+          <li>dérush par Claude : repérage des moments drôles et construction d'une histoire de 10–15 min,</li>
+          <li>montage : coupes des blancs, changements de POV, zooms, bruitages, personnages, textes, musique,</li>
+          <li>rendu MP4 + timeline XML à ouvrir dans Premiere Pro ou DaVinci Resolve pour les finitions.</li>
+        </ol>
+        <p id="empty-claude" class="muted"></p>
+      </div>
+    </section>
+  </main>
+
+  <!-- ========================================================= BIBLIOTHÈQUE -->
+  <main id="view-library" class="view hidden">
+    <section class="content full">
+      <div class="card">
+        <h2>Bibliothèque de la chaîne</h2>
+        <p class="muted">Le dossier qui contient le sound design, les musiques, les actions des personnages et les memes. Organisation conseillée : <code>sfx/</code>, <code>musiques/</code>, <code>personnages/Krok/</code>, <code>personnages/Mil/</code>, <code>memes/</code>. Les noms de fichiers servent de description : « krok_rire_fort.webm » est mieux que « anim03.webm ».</p>
+        <div class="row">
+          <input id="lib-dir" class="grow" placeholder="Chemin du dossier, ex. D:\KrokEtMil\Bibliotheque">
+          <button class="primary" id="lib-scan">Scanner</button>
+        </div>
+        <p id="lib-stats" class="muted"></p>
+        <div class="row">
+          <input id="lib-filter" class="grow" placeholder="Filtrer (nom, tag, perso…)">
+          <select id="lib-kind">
+            <option value="">Tous</option>
+            <option value="sfx">Bruitages</option>
+            <option value="character">Personnages</option>
+            <option value="image">Images</option>
+            <option value="video">Clips</option>
+            <option value="music">Musiques</option>
+          </select>
+        </div>
+        <table class="assets">
+          <thead><tr><th>Type</th><th>Élément</th><th>Perso</th><th>Tags (modifiables)</th><th>Durée</th><th>Actif</th><th></th></tr></thead>
+          <tbody id="lib-rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============================================================ RÉGLAGES -->
+  <main id="view-settings" class="view hidden">
+    <section class="content full">
+      <div class="card">
+        <h2>Claude</h2>
+        <p class="muted">Claude lit la transcription, choisit les moments, construit l'histoire et décide des effets. Compte environ 2 à 5 $ par épisode de 3–4 h. Clé à créer sur <a href="https://console.anthropic.com/" target="_blank" rel="noopener">console.anthropic.com</a>. Elle reste sur ce PC.</p>
+        <label>Clé API Anthropic <input id="cfg-key" type="password" placeholder="sk-ant-…"></label>
+        <p id="cfg-key-hint" class="muted"></p>
+      </div>
+      <div class="card">
+        <h2>Transcription et rendu</h2>
+        <div class="row wrap">
+          <label>Modèle Whisper
+            <select id="cfg-whisper">
+              <option value="large-v3-turbo">large-v3-turbo (précis, idéal avec carte NVIDIA)</option>
+              <option value="medium">medium</option>
+              <option value="small">small (rapide sur processeur)</option>
+              <option value="large-v3">large-v3 (le plus précis, lent)</option>
+            </select>
+          </label>
+          <label>Calcul
+            <select id="cfg-device">
+              <option value="auto">Auto</option>
+              <option value="cuda">Carte NVIDIA (CUDA)</option>
+              <option value="cpu">Processeur</option>
+            </select>
+          </label>
+          <label>Encodeur vidéo
+            <select id="cfg-codec">
+              <option value="libx264">H.264 logiciel (partout)</option>
+              <option value="h264_nvenc">H.264 NVIDIA (rapide)</option>
+              <option value="h264_videotoolbox">H.264 Mac</option>
+            </select>
+          </label>
+        </div>
+        <label>Police des textes à l'écran (.ttf, optionnel) <input id="cfg-font" placeholder="ex. C:\Windows\Fonts\impact.ttf"></label>
+        <p class="muted" id="cfg-workspace"></p>
+        <button class="primary" id="cfg-save">Enregistrer</button>
+      </div>
+      <div class="card">
+        <h2>Style de montage par défaut</h2>
+        <p class="muted">Copié dans chaque nouvel épisode.</p>
+        <div class="grid" id="style-form"></div>
+        <label>Consignes libres pour Claude (ton, gags récurrents, ce qu'il faut éviter…)
+          <textarea id="style-notes" rows="4"></textarea>
+        </label>
+        <button class="primary" id="style-save">Enregistrer le style</button>
+      </div>
+      <div class="card">
+        <h2>Bible de la chaîne</h2>
+        <p class="muted">Qui sont Krok et Mil, leurs personnages, leurs running gags, leur vocabulaire, des exemples de moments qui ont marché… Plus c'est précis, meilleur est le dérush.</p>
+        <textarea id="bible" rows="16"></textarea>
+        <button class="primary" id="bible-save">Enregistrer</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- Explorateur de fichiers -->
+  <dialog id="browser">
+    <form method="dialog" class="browser">
+      <h3>Choisir les rush</h3>
+      <div class="row"><input id="br-path" class="grow"><button type="button" class="ghost small" id="br-go">Aller</button></div>
+      <ul id="br-list" class="browser-list"></ul>
+      <div class="row end">
+        <button class="ghost" value="cancel">Fermer</button>
+        <button class="primary" id="br-add" value="ok" type="button">Ajouter la sélection</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
