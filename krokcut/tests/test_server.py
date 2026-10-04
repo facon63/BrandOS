@@ -5,7 +5,10 @@ from krokcut.server import app
 
 def test_api_smoke(workspace, rushes, library_dir):
     client = TestClient(app)
-    assert "KrokCut" in client.get("/").text
+    page = client.get("/")
+    assert "KrokCut" in page.text and page.headers["cache-control"] == "no-cache"
+    assert '"/static/app.js?v=' in page.text and '"/static/style.css?v=' in page.text  # jamais l'ancien script en cache
+    assert client.get("/static/app.js").headers["cache-control"] == "no-cache"
     cfg = client.get("/api/config").json()
     assert cfg["claude"] is False and cfg["model"] == "claude-opus-5-5"
 

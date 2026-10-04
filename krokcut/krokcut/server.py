@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import string
 import tempfile
@@ -64,6 +65,15 @@ jobs = JobManager()
 app.mount("/static", StaticFiles(directory=WEB), name="static")
 
 
+@app.middleware("http")
+async def always_fresh_interface(request: Request, call_next):
+    """Après une mise à jour, le navigateur ne doit jamais garder l'ancienne interface en cache."""
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 def _project(project_id: str) -> Project:
     try:
         return Project.open(project_id)
@@ -116,9 +126,22 @@ def _summary(p: Project) -> dict:
     }
 
 
+def _assets_version() -> str:
+    digest = hashlib.sha1()
+    for name in ("app.js", "style.css"):
+        digest.update((WEB / name).read_bytes())
+    return digest.hexdigest()[:12]
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return (WEB / "index.html").read_text("utf-8")
+    # Le numéro de version dans l'adresse oblige le navigateur à recharger script et styles
+    # quand ils changent (sinon il peut garder ceux d'avant la mise à jour).
+    version = _assets_version()
+    html = (WEB / "index.html").read_text("utf-8")
+    for name in ("app.js", "style.css"):
+        html = html.replace(f'"/static/{name}"', f'"/static/{name}?v={version}"')
+    return html
 
 
 # ------------------------------------------------------------------- réglages
