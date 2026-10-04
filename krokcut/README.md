@@ -87,7 +87,7 @@ Coût indicatif avec Claude Opus 5.5 : **environ 2 à 5 $ par épisode** de 3–
 Sans clé, KrokCut marche quand même en **mode hors ligne** (il repère les pics sonores), mais c'est nettement moins malin : c'est Claude qui comprend les blagues.
 
 ### 2. La bibliothèque (sound design, persos, memes)
-Onglet **Bibliothèque** → indique le dossier → **Scanner**. Organisation conseillée :
+Onglet **Bibliothèque** → indique le dossier → **Scanner**. Range-le où tu veux, par exemple dans Documents (KrokCut ne déplace ni ne modifie tes fichiers, et une mise à jour n'y touche jamais). Organisation conseillée :
 
 ```
 Bibliotheque/
