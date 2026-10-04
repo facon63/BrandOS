@@ -55,8 +55,11 @@ jobs:
           open ~/Applications/KrokCut.app
           for i in $(seq 1 120); do curl -fs $URL/api/version | grep '"current":true' && break; sleep 1; done
           curl -fs $URL/api/version | grep '"current":true'
+          # Un dossier personnel rangé dans ~/KrokCut (bibliothèque de sons…) doit survivre à la mise à jour
+          mkdir -p ~/KrokCut/"krok et mil"/sons && echo son > ~/KrokCut/"krok et mil"/sons/boing.wav
           # La commande de mise à jour doit fermer KrokCut s'il est ouvert
           bash krokcut/install-mac.sh
+          test -f ~/KrokCut/"krok et mil"/sons/boing.wav || { echo "La mise à jour a supprimé un dossier personnel"; exit 1; }
           if curl -fs $URL/api/config >/dev/null; then echo "KrokCut tourne encore après la mise à jour"; exit 1; fi
           open ~/Applications/KrokCut.app
           for i in $(seq 1 120); do curl -fs $URL/api/config >/dev/null && break; sleep 1; done
@@ -73,6 +76,7 @@ jobs:
       - name: Transcription Whisper sur la voix de synthèse du Mac
         run: |
           say -o "$RUNNER_TEMP/voix.aiff" "Hello Mil, this jump was terrible, we need to try again."
+          afinfo "$RUNNER_TEMP/voix.aiff" | grep -E "duration|data format" || true  # voix de synthèse vide ?
           cd ~/KrokCut
           PATH="$HOME/KrokCut/bin:$PATH" .venv/bin/python - <<'EOF'
           import os, subprocess, tempfile

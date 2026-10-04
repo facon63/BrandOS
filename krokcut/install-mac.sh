@@ -48,10 +48,18 @@ if curl -fs http://127.0.0.1:8765/api/config >/dev/null 2>&1; then
     sleep 0.25
   done
 fi
-# Met à jour le code sans toucher aux épisodes, réglages, Python ni ffmpeg déjà installés
-find "$DEST" -mindepth 1 -maxdepth 1 ! -name workspace ! -name .venv ! -name bin ! -name python -exec rm -rf {} +
+# Met à jour le code de KrokCut, et seulement lui : on ne supprime que les fichiers et dossiers que
+# KrokCut a lui-même installés (liste fixe ci-dessous + ceux de la nouvelle version). Tout ce que
+# tu as rangé dans ce dossier (bibliothèque de sons, rush…), les épisodes, les réglages, Python et
+# ffmpeg restent intacts.
+SHIPPED=".gitattributes .gitignore KrokCut.command README.md exemples install-mac.sh installer.bat installer.sh \
+krokcut lancer-mac.sh lancer.bat lancer.sh requirements-dev.txt requirements.txt tests"
+for name in $SHIPPED .pytest_cache .ruff_cache $(cd "$SRC" && ls -A); do
+  case "$name" in workspace | .venv | bin | python) continue ;; esac
+  rm -rf "${DEST:?}/$name"
+done
 (cd "$SRC" && tar -cf - --exclude workspace --exclude .venv --exclude bin --exclude python \
-  --exclude __pycache__ --exclude .pytest_cache .) | (cd "$DEST" && tar -xf -)
+  --exclude __pycache__ --exclude .pytest_cache --exclude .ruff_cache .) | (cd "$DEST" && tar -xf -)
 [ -f "$DEST/requirements.txt" ] || fail "Copie du code incomplète."
 
 # ------------------------------------------------------------ 2. Python + dépendances
