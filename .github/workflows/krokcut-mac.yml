@@ -80,8 +80,16 @@ jobs:
 
       - name: Transcription Whisper sur la voix de synthèse du Mac
         run: |
-          say -o "$RUNNER_TEMP/voix.aiff" "Hello Mil, this jump was terrible, we need to try again."
-          afinfo "$RUNNER_TEMP/voix.aiff" | grep -E "duration|data format" || true  # voix de synthèse vide ?
+          # La synthèse vocale des Mac de GitHub rend parfois un fichier vide (0,005 s) : on réessaie.
+          for i in 1 2 3 4 5; do
+            say -o "$RUNNER_TEMP/voix.aiff" "Hello Mil, this jump was terrible, we need to try again."
+            DUREE=$(afinfo "$RUNNER_TEMP/voix.aiff" | awk '/estimated duration/ {print $3}')
+            echo "Voix de synthèse : ${DUREE:-0} s"
+            awk -v d="${DUREE:-0}" 'BEGIN { exit !(d > 1) }' && break
+            sleep 5
+          done
+          awk -v d="${DUREE:-0}" 'BEGIN { exit !(d > 1) }' \
+            || { echo "La voix de synthèse du Mac de test reste vide : rien à transcrire"; exit 1; }
           cd ~/KrokCut
           PATH="$HOME/KrokCut/bin:$PATH" .venv/bin/python - <<'EOF'
           import os, subprocess, tempfile
