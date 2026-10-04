@@ -31,7 +31,7 @@ from .library import Library
 from .llm import LLM, NUM, STR, LLMError, arr, claude_available, enum, obj
 from .project import slugify
 from .prompts import GUIDE_INSTRUCTIONS, REFERENCE_ANALYSIS_INSTRUCTIONS, REFERENCE_SYSTEM
-from .sfx_detect import detect_library_sounds, load_detect_signal
+from .sfx_detect import SFX_DETECTOR_VERSION, detect_library_sounds, load_detect_signal
 from .steps import StepDoc, StepRunner, StepStatus
 from .transcribe import build_lines, fmt_time, transcribe_mix
 
@@ -47,7 +47,7 @@ REF_STEPS: list[tuple[str, str]] = [
 REF_STEP_IDS = [s for s, _ in REF_STEPS]
 MAX_REFERENCE_MINUTES = 60  # au-delà, c'est sûrement un rush, pas une vidéo montée
 SHORT_REFERENCE_MINUTES = 3  # en dessous, sûrement un Short : autre format, pas compté dans les moyennes
-EMPTY_SFX = {"hits": [], "music": [], "skipped": 0, "unreliable": [], "too_short": [], "tested": 0}
+EMPTY_SFX = {"hits": [], "music": [], "skipped": 0, "skipped_music": [], "unreliable": [], "too_short": [], "tested": 0}
 MAX_FRAMES_FOR_CLAUDE = 24
 PROMPT_BLOCK_MAX_CHARS = 12000
 GUIDE_INPUT_MAX_CHARS = 150000  # analyses relues par Claude pour écrire le guide (~40 000 tokens)
@@ -110,6 +110,15 @@ def too_long(doc: "ReferenceDoc") -> bool:
 
 def is_short(doc: "ReferenceDoc") -> bool:
     return 0 < (doc.state.metrics.get("duration_min") or 0) < SHORT_REFERENCE_MINUTES
+
+
+def sfx_measured(metrics: dict) -> bool:
+    """Bruitages cherchés, avec la détection actuelle (celle d'avant donnait trop de fausses alertes)."""
+    return bool(metrics.get("sfx_checked")) and metrics.get("sfx_detector") == SFX_DETECTOR_VERSION
+
+
+def sfx_outdated(metrics: dict) -> bool:
+    return bool(metrics.get("sfx_checked")) and metrics.get("sfx_detector") != SFX_DETECTOR_VERSION
 
 
 def flag(value) -> bool | None:
@@ -344,10 +353,10 @@ def heuristic_analysis(doc: ReferenceDoc, lines: list[dict], sfx: dict) -> dict:
             f"Rythme d'environ {m['cuts_per_min']:g} changements de plan par minute "
             f"(un plan dure {m.get('median_shot', 0):g} s en médiane)."
         )
-    top = (m.get("sfx_top") or []) if m.get("sfx_checked") else []
+    top = (m.get("sfx_top") or []) if sfx_measured(m) else []
     if top:
         rules.append("Bruitages les plus utilisés : " + ", ".join(f"{a} ({n}×)" for a, n in top[:6]) + ".")
-    if m.get("sfx_checked") and m.get("music_used"):
+    if sfx_measured(m) and m.get("music_used"):
         rules.append("Musique de fond utilisée : " + ", ".join(m["music_used"]) + ".")
     examples = []
     for h in (sfx.get("hits") or [])[:40]:
@@ -456,7 +465,7 @@ class ReferenceAnalyzer(StepRunner):
 
     def step_sfx(self) -> str:
         library = Library.load(self.cfg.library_dir) if self.cfg.library_dir else Library(Path("."), [])
-        unchecked = {"sfx_checked": False, "sfx_hits": 0, "sfx_per_min": 0.0, "sfx_top": [], "music_used": []}
+        unchecked = {"sfx_checked": False, "sfx_hits": 0, "sfx_per_min": 0.0, "sfx_top": [], "music_used": [], "sfx_detector": SFX_DETECTOR_VERSION}
         if not library.of_kind("sfx", "music"):
             self.doc.write_json("bruitages.json", EMPTY_SFX)
             self.doc.set_metrics(**unchecked)
@@ -477,6 +486,7 @@ class ReferenceAnalyzer(StepRunner):
         minutes = max(self.duration / 60, 0.01)
         self.doc.set_metrics(
             sfx_checked=True,
+            sfx_detector=SFX_DETECTOR_VERSION,
             sfx_hits=len(result["hits"]),
             sfx_per_min=round(len(result["hits"]) / minutes, 1),
             sfx_top=[[asset, n] for asset, n in counts.most_common(10)],
@@ -490,6 +500,8 @@ class ReferenceAnalyzer(StepRunner):
             notes.append(f"{len(result['too_short'])} son(s) trop bref(s) ou muet(s) pour être reconnus")
         if result["skipped"]:
             notes.append(f"{result['skipped']} son(s) non testé(s) : bibliothèque très grande")
+        if result.get("skipped_music"):
+            notes.append(f"{len(result['skipped_music'])} musique(s) non testée(s) : bibliothèque très grande")
         if notes:
             extra += " — " + " ; ".join(notes)
         return f"{len(result['hits'])} bruitages reconnus{extra}"
@@ -560,9 +572,10 @@ class ReferenceAnalyzer(StepRunner):
             except LLMError as exc:  # la vidéo compte quand même, avec ses mesures
                 self.doc.log(f"Claude indisponible, analyse par les mesures seules : {exc}")
                 analysis = {**heuristic_analysis(self.doc, lines, sfx), "claude_error": str(exc)}
-                message = f"mesures seules : Claude n'a pas répondu ({exc}). Clique sur Réanalyser pour réessayer."
+                message = f"mesures seules : Claude n'a pas répondu ({exc}). Relance l'analyse (Réanalyser) pour réessayer."
         else:
             analysis = heuristic_analysis(self.doc, lines, sfx)
+        analysis["sfx_detector"] = self.doc.state.metrics.get("sfx_detector")
         self.doc.write_json("analyse.json", analysis)
         return message
 
@@ -575,7 +588,7 @@ class ReferenceAnalyzer(StepRunner):
                 f"- parole : {round(100 * m.get('speech_ratio', 0))} % du temps, {m.get('words_per_min', 0)} mots/min",
                 (
                     f"- bruitages de la bibliothèque reconnus : {m.get('sfx_hits', 0)} ({m.get('sfx_per_min', 0):g}/min)"
-                    if m.get("sfx_checked")
+                    if sfx_measured(m)
                     else "- bruitages : non vérifiés (bibliothèque absente)"
                 ),
                 f"- musiques reconnues : {', '.join(m.get('music_used') or []) or 'aucune'}",
@@ -635,14 +648,38 @@ def _rate(x: float) -> float:
     return max(0.1, round(x, 1)) if x < 1 else _round_half(x)
 
 
+def usual_length(durations: list[float]) -> tuple[float, float] | None:
+    """Durées « habituelles » : autour de la médiane (à 1,5× près) dès 3 vidéos.
+
+    Un épisode spécial deux fois plus long (ou un extrait deux fois plus court) n'en fait pas partie.
+    Avec 1 ou 2 vidéos, impossible de dire laquelle est à part : toutes comptent.
+    """
+    d = sorted(x for x in durations if x)
+    if not d:
+        return None
+    if len(d) < 3:
+        return d[0], d[-1]
+    m = statistics.median(d)
+    return m / 1.5, m * 1.5
+
+
 def typical_docs(docs: list[ReferenceDoc]) -> list[ReferenceDoc]:
-    """Vidéos au format habituel de la chaîne (ni Short, ni rush) ; toutes si aucune ne l'est."""
-    return [d for d in docs if not is_short(d) and not too_long(d)] or docs
+    """Vidéos au format habituel de la chaîne : ni Short, ni rush, ni durée hors norme.
+
+    Elles seules comptent dans les durées et rythmes mesurés (toutes, si aucune n'est habituelle).
+    """
+    usual = [d for d in docs if not is_short(d) and not too_long(d)] or docs
+    bounds = usual_length([d.state.metrics.get("duration_min") or 0 for d in usual])
+    if bounds:
+        lo, hi = bounds
+        usual = [d for d in usual if lo <= (d.state.metrics.get("duration_min") or 0) <= hi] or usual
+    return usual
 
 
 def duration_targets(durations: list[float]) -> tuple[float, float]:
     """Fourchette de durée : le cœur des vidéos publiées (une vidéo hors norme ne l'étire pas)."""
-    d = sorted(durations)
+    lo_ok, hi_ok = usual_length(durations) or (0, float("inf"))
+    d = sorted(x for x in durations if lo_ok <= x <= hi_ok) or sorted(durations)
     if len(d) >= 4:
         q = statistics.quantiles(d, n=4, method="inclusive")
         lo, hi = q[0], q[2]
@@ -655,7 +692,8 @@ def duration_targets(durations: list[float]) -> tuple[float, float]:
 
 def measured_summary(docs: list[ReferenceDoc]) -> tuple[str, dict]:
     typical = typical_docs(docs)
-    shorts = [d.state.name for d in docs if d not in typical]
+    shorts = [d.state.name for d in docs if d not in typical and is_short(d)]
+    unusual = [d.state.name for d in docs if d not in typical and not is_short(d)]
     metrics = [d.state.metrics for d in typical]
     durations = [m["duration_min"] for m in metrics if m.get("duration_min")]
     videos = [m for m in metrics if m.get("height")]  # le rythme n'a de sens que pour une vraie vidéo
@@ -663,7 +701,7 @@ def measured_summary(docs: list[ReferenceDoc]) -> tuple[str, dict]:
     shot = _mean([m.get("median_shot") for m in videos])
     ratios = [m["speech_ratio"] for m in metrics if m.get("speech_ratio") is not None]
     speech = round(statistics.mean(ratios), 2) if ratios else None  # une part : pas d'arrondi au dixième
-    checked = [m for m in metrics if m.get("sfx_checked")]
+    checked = [m for m in metrics if sfx_measured(m)]
     sfx_rate = _mean([m.get("sfx_per_min", 0) for m in checked])
     top: Counter = Counter()
     for m in checked:
@@ -671,7 +709,7 @@ def measured_summary(docs: list[ReferenceDoc]) -> tuple[str, dict]:
             top[asset] += n
     music: Counter = Counter()  # une musique reconnue, même dans un Short, prouve qu'elle est utilisée
     for d in docs:
-        if d.state.metrics.get("sfx_checked"):
+        if sfx_measured(d.state.metrics):
             music.update(d.state.metrics.get("music_used") or [])
     lines = []
     if len(set(durations)) > 1:
@@ -695,12 +733,15 @@ def measured_summary(docs: list[ReferenceDoc]) -> tuple[str, dict]:
             f"- Non comptées dans ces chiffres (moins de {SHORT_REFERENCE_MINUTES} min, sûrement des Shorts) : "
             + ", ".join(shorts) + "."
         )
+    if unusual:
+        lines.append("- Non comptées non plus (durée inhabituelle, épisode spécial ?) : " + ", ".join(unusual) + ".")
     return "\n".join(lines), {
         "durations": durations,
         "sfx_rate": sfx_rate,
         "sfx_checked": bool(checked),
         "music": [a for a, _ in music.most_common()],
         "shorts": shorts,
+        "unusual": unusual,
     }
 
 
@@ -725,7 +766,10 @@ def suggested_style(analyses: list[tuple[ReferenceDoc, dict]], measured: dict, e
     if durations:
         out["target_min_minutes"], out["target_max_minutes"] = duration_targets(durations)
         sources["target_min_minutes"] = sources["target_max_minutes"] = "mesuré"
-        checked += ["target_min_minutes", "target_max_minutes"]
+        if max(durations) <= 1.5 * min(durations):  # durées trop dispersées : à décider soi-même
+            checked += ["target_min_minutes", "target_max_minutes"]
+        else:
+            sources["target_min_minutes"] = sources["target_max_minutes"] = "mesuré (durées très différentes)"
     # Seuls les sons de la bibliothèque, posés tels quels, sont reconnus : c'est un minimum.
     if measured.get("sfx_checked") and _round_half(measured.get("sfx_rate") or 0) >= 0.5:
         out["sfx_per_minute"] = _round_half(measured["sfx_rate"])
@@ -760,11 +804,11 @@ def suggested_style(analyses: list[tuple[ReferenceDoc, dict]], measured: dict, e
 def _guide_block(doc: ReferenceDoc, analysis: dict) -> str:
     """Analyse d'une vidéo, résumée pour la rédaction du guide."""
     m = doc.state.metrics
-    sfx = f"{m.get('sfx_per_min', 0):g} bruitages reconnus/min" if m.get("sfx_checked") else "bruitages non vérifiés"
+    sfx = f"{m.get('sfx_per_min', 0):g} bruitages reconnus/min" if sfx_measured(m) else "bruitages non vérifiés"
     header = f"### Vidéo « {doc.state.name} » — {m.get('duration_min', 0):g} min, {m.get('cuts_per_min', 0):g} plans/min, {sfx}"
     if is_short(doc):
         header += " (format court, sûrement un Short)"
-    compact = {k: (v[:900] if isinstance(v, str) else v) for k, v in analysis.items() if k not in ("source", "claude_error")}
+    compact = {k: (v[:900] if isinstance(v, str) else v) for k, v in analysis.items() if k not in ("source", "claude_error", "sfx_detector")}
     compact["rules"] = (analysis.get("rules") or [])[:12]
     compact["examples"] = (analysis.get("examples") or [])[:6]
     return header + "\n" + json.dumps(compact, ensure_ascii=False)
@@ -822,6 +866,7 @@ def build_guide(store: ReferenceStore, cfg: AppConfig, log: Callable[[str], None
         "sources": [d.id for d, _ in analyses],
         "ignored": ignored,
         "shorts": measured["shorts"],
+        "unusual": measured["unusual"],
         "claude_left_out": left_out,
         "claude_error": claude_error,
         "examples": examples,
@@ -832,3 +877,63 @@ def build_guide(store: ReferenceStore, cfg: AppConfig, log: Callable[[str], None
     atomic_write(store.guide_md, text.strip() + "\n")
     atomic_write(store.guide_json, json.dumps(data, ensure_ascii=False, indent=1))
     return data
+
+
+def refresh_suggestions(store: ReferenceStore) -> bool:
+    """Guide écrit par une version précédente : recalcule ses réglages suggérés (sans appeler Claude).
+
+    Les anciens guides cochaient tout, y compris « musique : non » deviné par Claude.
+    """
+    guide = store.guide()
+    if not guide or "checked" in (guide.get("suggested") or {}):
+        return False
+    analyses = [(d, a) for d, a in store.analyses() if not too_long(d)]
+    if not analyses:
+        return False
+    measured_text, measured = measured_summary([d for d, _ in analyses])
+    guide.pop("text", None)
+    guide.update(
+        measured=measured_text,
+        shorts=measured["shorts"],
+        unusual=measured["unusual"],
+        suggested=suggested_style(analyses, measured, guide.get("estimates") or {}),
+    )
+    atomic_write(store.guide_json, json.dumps(guide, ensure_ascii=False, indent=1))
+    return True
+
+
+def guide_outdated(store: ReferenceStore) -> bool:
+    """Une analyse s'est terminée après le guide (mise à jour du guide interrompue, par exemple)."""
+    guide = store.guide()
+    analyses = store.analyses()
+    if not analyses:
+        return guide is not None
+    if not guide:
+        return True
+    try:
+        updated = datetime.fromisoformat(guide.get("updated", "")).timestamp()
+    except ValueError:
+        return True
+    return any((d.state.steps["analyze"].finished or 0) > updated + 1 for d, _ in analyses)
+
+
+def needs_claude(doc: ReferenceDoc, analysis: dict) -> bool:
+    """Analyse à refaire par Claude : faite sans lui, ou sur des bruitages mesurés par l'ancienne détection."""
+    if analysis.get("source") != "claude":
+        return True
+    return bool(doc.state.metrics.get("sfx_checked")) and analysis.get("sfx_detector") != SFX_DETECTOR_VERSION
+
+
+def remeasure_outdated_sfx(store: ReferenceStore) -> list[ReferenceDoc]:
+    """Références mesurées par l'ancienne détection des bruitages : la recherche est à refaire (gratuit).
+
+    L'analyse par Claude, elle, n'est refaite qu'à la demande (« Mettre à jour »), car elle est payante ;
+    une analyse sans Claude est refaite tout de suite.
+    """
+    todo = []
+    for doc in store.list():
+        if doc.state.steps["sfx"].status == "done" and sfx_outdated(doc.state.metrics) and not too_long(doc):
+            analysis = doc.read_json("analyse.json") or {}
+            doc.invalidate(["sfx"] if analysis.get("source") == "claude" else ["sfx", "analyze"])
+            todo.append(doc)
+    return todo

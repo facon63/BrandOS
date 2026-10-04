@@ -14,6 +14,7 @@ from krokcut.llm import LLM
 from krokcut.pipeline import Pipeline
 from krokcut.project import Project
 from krokcut.references import ReferenceAnalyzer, ReferenceStore, build_guide, rhythm_metrics, timeline_text
+from krokcut.sfx_detect import SFX_DETECTOR_VERSION as DET
 from krokcut.sfx_detect import Detector
 
 from .conftest import SR, _ffmpeg, _write_wav
@@ -129,13 +130,13 @@ def voice_like(seconds, seed):
     return (0.08 * env * (noise + 1.5 * pitch)).astype(np.float32)
 
 
-def music_like(seconds, seed):
+def music_like(seconds, seed, bpm=None):
     """Morceau synthétique : accords qui changent, batterie, mélodie (jamais deux fois pareil)."""
     sr = 8000
     rng = np.random.default_rng(seed)
     n = int(seconds * sr)
     out = np.zeros(n)
-    beat = int(sr * 60 / rng.uniform(90, 130))
+    beat = int(sr * 60 / (bpm or rng.uniform(90, 130)))
     tt = np.arange(beat) / sr
     for k, i0 in enumerate(range(0, n - beat, beat)):
         f = 110 * 2 ** (rng.integers(0, 24) / 12)
@@ -387,8 +388,8 @@ def test_speech_ratio_and_measured_summary(workspace, published):
     docs = []
     for i, metrics in enumerate(
         [
-            {"duration_min": 12, "height": 1080, "cuts_per_min": 10.0, "median_shot": 4.0, "sfx_checked": True, "sfx_per_min": 6.0, "sfx_top": [["sfx/a", 70]], "speech_ratio": 0.7},
-            {"duration_min": 11, "height": 1080, "cuts_per_min": 8.0, "median_shot": 5.0, "sfx_checked": True, "sfx_per_min": 0.0, "speech_ratio": 0.8},
+            {"duration_min": 12, "height": 1080, "cuts_per_min": 10.0, "median_shot": 4.0, "sfx_checked": True, "sfx_detector": DET, "sfx_per_min": 6.0, "sfx_top": [["sfx/a", 70]], "speech_ratio": 0.7},
+            {"duration_min": 11, "height": 1080, "cuts_per_min": 8.0, "median_shot": 5.0, "sfx_checked": True, "sfx_detector": DET, "sfx_per_min": 0.0, "speech_ratio": 0.8},
             {"duration_min": 10, "height": 0, "cuts_per_min": 0, "median_shot": 600.0, "sfx_checked": False, "music_used": ["music/x"], "sfx_top": [["sfx/b", 9]]},
         ]
     ):
@@ -535,7 +536,8 @@ def test_suggestions_ignore_outliers_and_unknowns(workspace, published):
     from krokcut.references import duration_targets, flag, measured_summary, suggested_style
 
     assert duration_targets([12, 13, 14]) == (11.0, 15.0)
-    assert duration_targets([10, 12, 14, 40]) == (10.0, 22.0)  # une vidéo très longue n'étire pas la fourchette
+    assert duration_targets([12, 14, 45]) == (11.0, 15.0)  # un épisode spécial n'étire pas la fourchette
+    assert duration_targets([10, 12, 14, 40]) == (9.0, 15.0)
     assert duration_targets([55, 59]) == (54.0, 60.0)
     assert flag("oui") is True and flag("non") is False and flag("inconnu") is None
     assert flag(False) is None  # anciennes analyses : « false » voulait aussi dire « je ne sais pas »
@@ -546,9 +548,9 @@ def test_suggestions_ignore_outliers_and_unknowns(workspace, published):
         store,
         published,
         [
-            ({"duration_min": 0.9, "sfx_checked": True, "sfx_per_min": 30.0}, claude(texts_per_minute=9, has_music="non", cold_open="non")),
-            ({"duration_min": 12, "sfx_checked": True, "sfx_per_min": 4.0}, claude(texts_per_minute=0.2, has_music="non", cold_open="oui")),
-            ({"duration_min": 14, "sfx_checked": True, "sfx_per_min": 2.0}, claude(texts_per_minute=0.2, has_music="inconnu", cold_open="inconnu")),
+            ({"duration_min": 0.9, "sfx_checked": True, "sfx_detector": DET, "sfx_per_min": 30.0}, claude(texts_per_minute=9, has_music="non", cold_open="non")),
+            ({"duration_min": 12, "sfx_checked": True, "sfx_detector": DET, "sfx_per_min": 4.0}, claude(texts_per_minute=0.2, has_music="non", cold_open="oui")),
+            ({"duration_min": 14, "sfx_checked": True, "sfx_detector": DET, "sfx_per_min": 2.0}, claude(texts_per_minute=0.2, has_music="inconnu", cold_open="inconnu")),
         ],
     )
     text, measured = measured_summary(docs)
@@ -649,3 +651,140 @@ def test_legacy_notes_guide_header_and_authoritative_settings(workspace, library
     monkeypatch.setattr(references, "GUIDE_INPUT_MAX_CHARS", 10)
     data = build_guide(store, cfg)
     assert data["source"] == "claude" and data["claude_left_out"] == [doc.state.name] and len(data["sources"]) == 2
+
+
+def test_unusual_length_and_old_guide_migration(workspace, published, monkeypatch):
+    import json as _json
+
+    from krokcut import server
+    from krokcut.references import guide_outdated, measured_summary, refresh_suggestions, suggested_style
+
+    store = ReferenceStore()
+    claude = lambda **est: {"source": "claude", "rules": ["r"], "examples": [], "estimates": est}  # noqa: E731
+    docs = fake_refs(
+        store,
+        published,
+        [
+            ({"duration_min": 12, "sfx_checked": True, "sfx_detector": DET, "sfx_per_min": 4.0}, claude(texts_per_minute=0.2, has_music=False)),
+            ({"duration_min": 14, "sfx_checked": True, "sfx_detector": DET, "sfx_per_min": 4.0}, claude(texts_per_minute=0.2, has_music=False)),
+            ({"duration_min": 45, "sfx_checked": True, "sfx_detector": DET, "sfx_per_min": 20.0}, claude(texts_per_minute=0.2, has_music=False)),
+        ],
+    )
+    text, measured = measured_summary(docs)
+    assert measured["durations"] == [12, 14] and measured["unusual"] == ["video2"] and "au moins 4 par minute" in text
+    two = suggested_style([(d, d.read_json("analyse.json")) for d in docs[::2]], measured_summary(docs[::2])[1], None)
+    assert "target_min_minutes" not in two["checked"]  # 12 et 45 min : trop différentes pour cocher
+
+    # Guide écrit par la version précédente : tout coché, « musique : non », textes arrondis à 0
+    old = {"updated": "2026-01-01T00:00:00", "source": "claude", "sources": [d.id for d in docs], "examples": [], "estimates": {"has_music": False},
+           "measured": "", "suggested": {"values": {"music": False, "texts_per_minute": 0.0, "sfx_per_minute": 4.0},
+                                         "sources": {"music": "estimé par Claude", "texts_per_minute": "estimé par Claude", "sfx_per_minute": "mesuré"}}}
+    store.guide_json.write_text(_json.dumps(old), "utf-8")
+    store.guide_md.write_text("## Format et rythme\n- Court.\n", "utf-8")
+    monkeypatch.setattr(server, "jobs", JobManager(start=False))
+    client = TestClient(server.app)
+    applied = client.post("/api/guide/apply").json()  # sans « checked » : seulement le mesuré
+    assert applied["music"] is True and applied["texts_per_minute"] == 1.5 and applied["sfx_per_minute"] == 4.0
+    assert guide_outdated(store)  # les analyses sont plus récentes que ce guide
+    assert refresh_suggestions(store) and not refresh_suggestions(store)
+    suggested = store.guide()["suggested"]
+    assert "music" not in suggested["values"] and suggested["values"]["texts_per_minute"] == 0.2
+    assert "texts_per_minute" not in suggested["checked"] and store.guide()["text"].startswith("## Format")
+
+
+def test_heavily_used_sound_still_found(monkeypatch):
+    """Le son fétiche de la chaîne, posé 30 fois en 10 min, ne doit pas monter son propre seuil."""
+    from krokcut import sfx_detect
+
+    sr = 8000
+    ts = np.arange(int(0.7 * sr)) / sr
+    boom = (0.6 * np.sin(2 * np.pi * 70 * ts) * np.exp(-4 * ts) + 0.2 * np.sin(2 * np.pi * 140 * ts) * np.exp(-6 * ts)).astype(np.float32)
+    voice = voice_like(600, 8)
+    rms = lambda x: float(np.sqrt(np.mean(x.astype(np.float64) ** 2)))  # noqa: E731
+    times = [10 + 19.3 * k for k in range(30)]
+    for at in times:
+        i = int(at * sr)
+        voice[i : i + len(boom)] += boom * rms(voice[i : i + len(boom)]) / rms(boom) * 10 ** (-6 / 20)
+    lib = FakeLibrary({"vine_boom": boom})
+    monkeypatch.setattr(sfx_detect, "load_asset_audio", fake_audio(lib))
+    hits = sfx_detect.detect_library_sounds(voice, lib, Path("."))["hits"]
+    assert len(hits) == 30 and all(any(abs(h["t"] - at) < 0.05 for h in hits) for at in times)
+
+
+def test_same_tempo_intro_is_not_a_library_track(monkeypatch):
+    from krokcut import sfx_detect
+
+    sr = 8000
+    intro, track = music_like(35, 11, bpm=100), music_like(60, 12, bpm=100)  # même tempo, autre morceau
+    signal = voice_like(120, 13)
+    signal[: len(intro)] = intro
+    lib = FakeLibrary({}, {"meme_tempo": track})
+    monkeypatch.setattr(sfx_detect, "load_asset_audio", fake_audio(lib))
+    assert sfx_detect.detect_library_sounds(signal, lib, Path("."))["music"] == []
+    signal[60 * sr : 100 * sr] += 0.1 * track[: 40 * sr]  # le vrai morceau, sous les voix
+    assert [m["asset"] for m in sfx_detect.detect_library_sounds(signal, lib, Path("."))["music"]] == ["music/meme_tempo"]
+
+
+def test_short_lookalike_does_not_replace_the_real_sound(monkeypatch):
+    from krokcut import sfx_detect
+
+    sr = 8000
+    tb = np.arange(int(1.2 * sr)) / sr
+    bell = (0.5 * (np.sin(2 * np.pi * 880 * tb) + 0.4 * np.sin(2 * np.pi * 1760 * tb)) * np.exp(-3 * tb)).astype(np.float32)
+    beep = (0.9 * np.sin(2 * np.pi * 880 * np.arange(int(0.375 * sr)) / sr)).astype(np.float32)
+    signal = voice_like(150, 14)
+    for at in (20.0, 70.0, 120.0):
+        i = int(at * sr)
+        signal[i : i + len(bell)] += bell
+    lib = FakeLibrary({"cloche": bell, "bip": beep})
+    monkeypatch.setattr(sfx_detect, "load_asset_audio", fake_audio(lib))
+    found = [(h["asset"], round(h["t"])) for h in sfx_detect.detect_library_sounds(signal, lib, Path("."))["hits"]]
+    assert found == [("sfx/cloche", 20), ("sfx/cloche", 70), ("sfx/cloche", 120)]
+
+
+def test_old_sfx_measurements_are_redone(workspace, published):
+    from krokcut.references import measured_summary, needs_claude, remeasure_outdated_sfx
+
+    store = ReferenceStore()
+    claude = {"source": "claude", "rules": [], "examples": [], "estimates": {}, "sfx_detector": None}
+    heuristic = {"source": "heuristic", "rules": [], "examples": [], "estimates": {}}
+    old, old_h, new = fake_refs(
+        store,
+        published,
+        [
+            ({"duration_min": 12, "sfx_checked": True, "sfx_per_min": 12.8, "sfx_top": [["sfx/blip", 150]]}, claude),
+            ({"duration_min": 12, "sfx_checked": True, "sfx_per_min": 9.0}, heuristic),
+            ({"duration_min": 12, "sfx_checked": True, "sfx_detector": DET, "sfx_per_min": 2.0}, {**claude, "sfx_detector": DET}),
+        ],
+    )
+    for d in (old, old_h, new):
+        d.set_step("sfx", status="done")
+    text, measured = measured_summary([old, old_h, new])
+    assert measured["sfx_rate"] == 2.0 and "sfx/blip" not in text  # anciennes fausses alertes ignorées
+    assert needs_claude(old, old.read_json("analyse.json")) and not needs_claude(new, new.read_json("analyse.json"))
+    redone = remeasure_outdated_sfx(store)
+    assert {d.id for d in redone} == {old.id, old_h.id}
+    old, old_h = store.open(old.id), store.open(old_h.id)
+    assert old.state.steps["sfx"].status == "pending" and old.state.steps["analyze"].status == "done"  # Claude : à la demande
+    assert old_h.state.steps["analyze"].status == "pending"  # sans Claude : refait tout de suite (gratuit)
+
+
+def test_cli_style_retries_claude(workspace, library_dir, published, monkeypatch):
+    from krokcut import cli, references
+    from krokcut.llm import LLMError
+
+    setup_cfg(library_dir)
+    monkeypatch.setattr(references, "transcribe_mix", lambda pcm, levels, *a, **k: published["words"])
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    def down(self, **kwargs):
+        raise LLMError("Limite de débit de l'API atteinte")
+
+    monkeypatch.setattr(LLM, "ask_json", down)
+    cli.main(["style", str(published["path"])])
+    doc = ReferenceStore().list()[0]
+    assert doc.read_json("analyse.json")["source"] == "heuristic"
+    monkeypatch.setattr(LLM, "ask_json", fake_ask_json)
+    cli.main(["style", str(published["path"])])  # relancer la commande réessaie Claude
+    assert ReferenceStore().open(doc.id).read_json("analyse.json")["source"] == "claude"
+    assert ReferenceStore().guide()["source"] == "claude"

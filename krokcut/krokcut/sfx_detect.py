@@ -8,13 +8,17 @@ mixé sous les voix (jusqu'à une douzaine de dB en dessous) ou à un autre volu
 
 Garde-fous contre les faux positifs (validés sur de la vraie parole et de vrais bruitages) :
 - seuil tiré de la queue de distribution des maxima par bloc (statistique des valeurs extrêmes),
-  plus strict pour les sons très brefs (clic, pop), qui ressemblent à des syllabes ;
+  mesurée sans les endroits où le son est vraiment là (un son posé 30 fois ne relève pas son
+  propre seuil), plus strict pour les sons très brefs (clic, pop) qui ressemblent à des syllabes ;
 - le son doit être présent sur toute sa durée (pas seulement sur son attaque) ;
 - les échos d'un son déjà trouvé et les ressemblances avec la fin d'un autre son sont écartés,
-  deux sons réellement superposés sont gardés tous les deux ;
+  deux sons réellement superposés sont gardés tous les deux, un son tenu répété aussitôt
+  (« ding ding ») compte deux fois ;
 - un son qui « colle » partout est écarté ;
-- une musique n'est retenue que si 24 s d'affilée se retrouvent dans la vidéo, ou si un
-  extrait ressort très nettement (intro, générique).
+- une musique n'est retenue que si 24 s d'affilée se retrouvent dans la vidéo (48 s quand le
+  calage est faible : un autre morceau au même tempo peut faire illusion), ou si un extrait
+  ressort très nettement (intro, générique) ; deux morceaux calés au même endroit passent par la
+  même vérification que les bruitages superposés.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ import numpy as np
 from .ffmpeg_utils import FFmpegError, run_ffmpeg
 
 DETECT_SR = 8000
+SFX_DETECTOR_VERSION = 2  # change quand la détection change : les anciennes mesures sont refaites
 MIN_SOUND_S = 0.08  # après découpe des silences
 HEAD_EXCERPT_S = 3.0  # sons longs : on cherche leur début (retrouve aussi un son coupé au montage)
 MUSIC_EXCERPT_S = 8.0
@@ -35,12 +40,20 @@ MUSIC_RUN = 3  # extraits consécutifs alignés (24 s d'affilée) : fiable même
 MUSIC_FLOOR = 0.05  # score minimal sur chacun de ces extraits
 MUSIC_LOUD = 0.5  # un seul extrait suffit quand la musique est bien audible (intro, générique)
 MAX_MUSIC_EXCERPTS = 30  # 4 premières minutes du morceau
+MUSIC_MIN_EXCERPTS = 6  # gardés à chaque musique même avec une énorme bibliothèque de bruitages
+MUSIC_SHARPNESS = 1.5  # le bon calage doit dépasser nettement les calages voisins (20 à 250 ms)
+MUSIC_SURE = 0.09  # en dessous, un autre morceau au même tempo peut faire illusion...
+MUSIC_LONG_RUN = 6  # ... il faut alors 6 extraits alignés d'affilée (48 s), pas seulement 3
+REPEAT_MIN_SCORE = 0.5
+REPEAT_RATIO = 0.7  # le 2e départ doit être presque aussi net que le 1er
+REPEAT_GAP_S = 0.1  # un son tenu répété aussitôt : 2e départ cherché au-delà de cet écart
 SCORE_FLOOR = 0.15
 IMPULSIVE_FLOOR = 0.35
 IMPULSIVE_SPAN_S = 0.08
 BLOCK_K = 12.0
 TAIL_K = 10.0
 THRESHOLD_CAP = 0.9
+LOCAL_CONTRAST = 2.0  # pic au moins 2 fois au-dessus de ce qui l'entoure
 WHITEN_POWER = 0.5
 SIDE_LOBE_RATIO = 0.5
 REJECT_RADIUS = 40  # 5 ms
@@ -80,7 +93,7 @@ class Template:
     head: float  # décalage (s) du début de l'extrait dans le fichier d'origine
     impulsive: bool
     radius: int  # rayon de suppression des non-maxima (échantillons)
-    weight: float = field(default=0.0)  # « quantité de son » : départage deux variantes
+    weight: float = field(default=0.0)  # durée utile du son (s) : entre deux variantes, la plus complète
 
 
 def trim_silence(raw: np.ndarray, sr: int = DETECT_SR, rel_db: float = -55.0, margin_s: float = 0.02) -> tuple[np.ndarray, float] | None:
@@ -145,7 +158,7 @@ def make_template(asset_id: str, raw: np.ndarray, sr: int = DETECT_SR) -> Templa
         head=head,
         impulsive=energy_span(x, sr) < IMPULSIVE_SPAN_S,
         radius=suppression_radius(x, sr),
-        weight=float(np.sqrt(np.sum(x.astype(np.float64) ** 2))),
+        weight=energy_span(trimmed[0], sr),
     )
 
 
@@ -299,6 +312,27 @@ class Detector:
                     break
         return sorted((j, float(ncc[j])) for j in taken)
 
+    def noise_threshold(self, ncc: np.ndarray, t: np.ndarray, floor: float, max_hits: int) -> float:
+        """Seuil mesuré sur la bande-son sans les endroits où le son est vraiment là.
+
+        Un son utilisé 30 fois remplirait sinon lui-même la queue de distribution, et son seuil
+        monterait au-dessus de ses propres occurrences.
+        """
+        L = len(t)
+        masked = None
+        for idx, score in Detector.peaks(ncc, floor, L, max_hits):
+            # Une vraie occurrence est un pic isolé ; un son qui ressemble au fond (bourdonnement)
+            # donne un plateau : on ne le retire pas, sinon il fausserait lui-même son seuil.
+            around = np.concatenate([ncc[max(0, idx - 4 * L) : max(0, idx - L)], ncc[idx + L : idx + 5 * L]])
+            if len(around) and score < LOCAL_CONTRAST * float(np.percentile(np.abs(around), 90)):
+                continue
+            if self.consistent(t, idx):
+                if masked is None:
+                    masked = ncc.copy()
+                    fill = float(np.median(ncc[:: max(1, len(ncc) // 100000)]))
+                masked[max(0, idx - L) : idx + L] = fill
+        return self.threshold(ncc if masked is None else masked, L, floor)
+
     def consistent(self, t: np.ndarray, idx: int) -> bool:
         """Le son est-il vraiment là, sur toute sa durée ?
 
@@ -306,8 +340,12 @@ class Detector:
         d'énergie (la voix ou la musique ne font qu'en ajouter). Une ressemblance due au hasard
         (fin d'un autre son, attaque d'un mot) laisse des morceaux presque vides.
         """
+        return self.consistent_window(t, self.signal[idx : idx + len(t)])
+
+    @staticmethod
+    def consistent_window(t: np.ndarray, window: np.ndarray) -> bool:
         L = len(t)
-        w = self.signal[idx : idx + L].astype(np.float64)
+        w = np.asarray(window, dtype=np.float64).copy()
         if len(w) < L:
             return False
         w -= w.mean()
@@ -332,7 +370,7 @@ class Detector:
             return None, 1.0, []
         ncc = self.ncc(template, t)
         L = len(t)
-        threshold = self.threshold(ncc, L, floor)
+        threshold = self.noise_threshold(ncc, t, floor, max_hits)
         candidates = np.flatnonzero(ncc >= threshold)
         if not len(candidates):
             return t, threshold, []
@@ -359,7 +397,52 @@ class Detector:
             taken.append(idx)
             if len(taken) > max_hits:
                 break
-        return t, threshold, sorted((j, float(ncc[j])) for j in taken)
+        hits = [(j, float(ncc[j])) for j in taken]
+        if radius > REPEAT_GAP_S * self.sr and hits and len(hits) <= max_hits:  # son tenu : « ding ding »
+            hits += self.repeats(t, hits, threshold, radius)
+        return t, threshold, sorted(hits)
+
+    def _local_ncc(self, segment: np.ndarray, t: np.ndarray) -> np.ndarray:
+        L, n = len(t), len(segment)
+        if n < L:
+            return np.zeros(0)
+        size = 1 << int(np.ceil(np.log2(n + L)))
+        corr = np.fft.irfft(np.fft.rfft(segment, size) * np.conj(np.fft.rfft(t, size)), size)[: n - L + 1]
+        c1 = np.concatenate([[0.0], np.cumsum(segment)])
+        c2 = np.concatenate([[0.0], np.cumsum(segment * segment)])
+        win = c1[L:] - c1[:-L]
+        var = np.maximum((c2[L:] - c2[:-L]) - win * win / L, 0.0)
+        den = np.sqrt(var * float(np.dot(t, t)))
+        return np.where(var > (self.floor**2) * L, corr / np.maximum(den, 1e-12), 0.0)
+
+    def repeats(self, t: np.ndarray, hits: list[tuple[int, float]], threshold: float, radius: int) -> list[tuple[int, float]]:
+        """Un son tenu (note, gong) répété aussitôt : une fois le premier retiré, le second ressort."""
+        L = len(t)
+        t64 = t.astype(np.float64)
+        tt = float(np.dot(t64, t64))
+        gap = int(REPEAT_GAP_S * self.sr)
+        found: list[tuple[int, float]] = []
+        for idx, score in hits:
+            if score < REPEAT_MIN_SCORE:  # sous les voix, un son faible ne laisse pas voir un 2e départ fiable
+                continue
+            a, b = max(0, idx - radius), min(self.n, idx + radius + L)
+            seg = self.signal[a:b].astype(np.float64)
+            w = seg[idx - a : idx - a + L]
+            seg[idx - a : idx - a + L] -= (float(np.dot(w - w.mean(), t64)) / tt) * t64
+            local = self._local_ncc(seg, t64)
+            if not len(local):
+                continue
+            pos = np.arange(len(local)) + a
+            local[np.abs(pos - idx) < gap] = 0.0
+            local[np.abs(pos - idx) >= radius] = 0.0
+            for k, _ in hits:  # pas sur une autre occurrence déjà trouvée
+                if k != idx and abs(k - idx) < 2 * radius + L:
+                    local[max(0, k - radius - a) : max(0, k + radius - a)] = 0.0
+            j = int(np.argmax(local))
+            if local[j] >= max(threshold, REPEAT_RATIO * score) and self.consistent_window(t, seg[j : j + L]):
+                if all(abs(a + j - k) >= gap for k, _ in found):
+                    found.append((a + j, float(local[j])))
+        return found
 
     def residual_score(self, t: np.ndarray, idx: int, others: list[tuple[int, np.ndarray, float]]) -> tuple[float, float]:
         """Score et gain du son à `idx` une fois retirés les sons déjà trouvés qui le chevauchent."""
@@ -383,6 +466,33 @@ class Detector:
         return [(i / self.sr, s) for i, s in self.search(template, floor, radius, max_hits)[2]]
 
 
+def sharp_peak(curve: np.ndarray, i: int, sr: int = DETECT_SR) -> bool:
+    """Le bon calage d'une musique ressort des calages voisins (20 à 250 ms autour).
+
+    Une musique seulement ressemblante (nappes, accords tenus) donne plutôt un plateau.
+    """
+    near, far = int(0.02 * sr), int(0.25 * sr)
+    sides = np.concatenate([curve[max(0, i - far) : max(0, i - near)], curve[i + near : i + far]])
+    return not len(sides) or float(curve[i]) >= MUSIC_SHARPNESS * float(sides.max())
+
+
+def _aligned_run(detector: "Detector", track: np.ndarray, first: int, idx: int, L: int, limit: int = MUSIC_LONG_RUN) -> int:
+    """Nombre d'extraits qui se suivent dans le morceau ET dans la vidéo, au même calage."""
+    count = MUSIC_RUN
+    for step in (1, -1):
+        r = MUSIC_RUN if step == 1 else 1
+        while count < limit:
+            k, pos = (first + r, idx + r * L) if step == 1 else (first - r, idx - r * L)
+            if k < 0 or (k + 1) * L > len(track) or pos < 0 or pos + L > detector.n:
+                break
+            prepared = detector.prepare(track[k * L : (k + 1) * L])
+            if prepared is None or detector.residual_score(prepared, pos, [])[0] < MUSIC_FLOOR:
+                break
+            count += 1
+            r += 1
+    return count
+
+
 def _ncc_at(a: np.ndarray, b: np.ndarray) -> float:
     if len(a) != len(b) or len(a) < 10:
         return 0.0
@@ -393,7 +503,11 @@ def _ncc_at(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _variants(a: dict, b: dict, sr: int = DETECT_SR) -> bool:
-    """Deux sons trouvés au même endroit sont-ils deux versions du même son (à fusionner) ?"""
+    """Deux sons trouvés au même endroit sont-ils deux versions du même fichier (à fusionner) ?
+
+    Oui seulement s'ils se superposent sur presque toute leur énergie (même son, avec un peu plus ou
+    moins de silence ou de queue) : un son bref qui ressemble au début d'un son long n'en est pas un.
+    """
     lag = b["idx"] - a["idx"]
     ta, tb = a["template"].x, b["template"].x
     if lag < 0:
@@ -401,7 +515,18 @@ def _variants(a: dict, b: dict, sr: int = DETECT_SR) -> bool:
     m = min(len(ta) - lag, len(tb))
     if m < 0.05 * sr:
         return False
-    return _ncc_at(ta[lag : lag + m], tb[:m]) >= 0.5
+    ea, eb = ta.astype(np.float64) ** 2, tb.astype(np.float64) ** 2
+    covered_a = float(ea[lag : lag + m].sum()) / max(float(ea.sum()), 1e-12)
+    covered_b = float(eb[:m].sum()) / max(float(eb.sum()), 1e-12)
+    return covered_a >= 0.95 and covered_b >= 0.95 and _ncc_at(ta[lag : lag + m], tb[:m]) >= 0.9
+
+
+def _better_variant(h: dict, rival: dict) -> bool:
+    """Entre deux variantes : la plus complète (durée utile), à égalité la mieux reconnue."""
+    wh, wr = h["template"].weight, rival["template"].weight
+    if abs(wh - wr) > 0.1 * max(wh, wr):
+        return wh > wr
+    return h["score"] > rival["score"]
 
 
 def detect_library_sounds(
@@ -414,28 +539,36 @@ def detect_library_sounds(
     """Cherche tous les bruitages et musiques de la bibliothèque dans une bande-son à 8 kHz."""
     sr = DETECT_SR
     duration_min = max(len(signal) / sr / 60, 0.01)
-    empty = {"hits": [], "music": [], "skipped": 0, "unreliable": [], "too_short": [], "tested": 0}
+    empty = {"hits": [], "music": [], "skipped": 0, "skipped_music": [], "unreliable": [], "too_short": [], "tested": 0}
     if len(signal) < sr:
         return empty
 
-    music_assets = [a for a in library.of_kind("music") if (a.get("duration") or 0) >= MUSIC_EXCERPT_S * 2]
+    long_enough = MUSIC_EXCERPT_S * MUSIC_RUN  # 24 s : de quoi retrouver 3 extraits d'affilée
+    music_assets = [a for a in library.of_kind("music") if (a.get("duration") or 0) >= long_enough]
     jingles = [a for a in library.of_kind("music") if a not in music_assets]  # musiques courtes : cherchées comme un bruitage
     jingle_ids = {a["id"] for a in jingles}
     sfx_assets = library.of_kind("sfx") + jingles
-    # Budget de calcul (une FFT par son, une par extrait de musique) : les bruitages d'abord
-    budget = max_templates
+    # Budget de calcul (une FFT par son, une par extrait de musique) : chaque musique garde ses
+    # premiers extraits, les bruitages prennent le reste, et ce qui reste prolonge les musiques.
+    full = {a["id"]: min(MAX_MUSIC_EXCERPTS, int((a.get("duration") or 0) // MUSIC_EXCERPT_S)) for a in music_assets}
+    allot: dict[str, int] = {}
+    reserve = max_templates // 4
+    for a in music_assets:
+        need = min(full[a["id"]], MUSIC_MIN_EXCERPTS)
+        if need <= reserve:
+            allot[a["id"]] = need
+            reserve -= need
+    skipped_music = [a["name"] for a in music_assets if a["id"] not in allot]
+    budget = max_templates - sum(allot.values())
     skipped = max(0, len(sfx_assets) - budget)
     sfx_assets = sfx_assets[:budget]
     budget -= len(sfx_assets)
-    kept_music = []
-    for asset in music_assets:
-        cost = min(MAX_MUSIC_EXCERPTS, int((asset.get("duration") or 0) // MUSIC_EXCERPT_S))
-        if cost <= budget:
-            kept_music.append(asset)
-            budget -= cost
-        else:
-            skipped += 1
-    music_assets = kept_music
+    for a in music_assets:
+        if a["id"] in allot:
+            more = min(full[a["id"]] - allot[a["id"]], budget)
+            allot[a["id"]] += more
+            budget -= more
+    music_assets = [a for a in music_assets if a["id"] in allot]
     total = len(sfx_assets) + len(music_assets)
 
     # Bruitages : les sons de longueur voisine partagent le calcul de normalisation
@@ -478,8 +611,9 @@ def detect_library_sounds(
         overlapping = [k for k in kept if k["idx"] < end and h["idx"] < k["idx"] + len(k["t"])]
         rival = next((k for k in overlapping if k["template"].asset_id != h["template"].asset_id and _variants(k, h, sr)), None)
         if rival is not None:
-            if h["score"] * h["template"].weight > rival["score"] * rival["template"].weight:
-                h["gain"] = rival["gain"]
+            if _better_variant(h, rival):
+                others = [(k["idx"], k["t"], k["gain"]) for k in overlapping if k is not rival]
+                h["gain"] = detector.residual_score(h["t"], h["idx"], others)[1]  # son propre gain, pas celui du rival
                 kept[kept.index(rival)] = h
             continue
         score, gain = detector.residual_score(h["t"], h["idx"], [(k["idx"], k["t"], k["gain"]) for k in overlapping])
@@ -506,6 +640,7 @@ def detect_library_sounds(
     # suivent se retrouvent à la suite dans la vidéo (même sous les voix), ou si un extrait
     # ressort très nettement (musique seule : intro, générique).
     L = int(MUSIC_EXCERPT_S * sr)
+    candidates: list[dict] = []  # meilleur calage de chaque morceau : score, extraits et positions
     for j, asset in enumerate(music_assets):
         if on_progress:
             on_progress((len(templates) + j) / max(1, total), asset["name"])
@@ -516,36 +651,56 @@ def detect_library_sounds(
         if trimmed is None:
             continue
         track = trimmed[0]
-        best = 0.0
-        run: list[np.ndarray] = []
-        for k in range(min(MAX_MUSIC_EXCERPTS, len(track) // L)):
+        best: dict | None = None
+        run: list[tuple[np.ndarray, np.ndarray]] = []
+        for k in range(min(allot[asset["id"]], len(track) // L)):
             prepared = detector.prepare(track[k * L : (k + 1) * L])
             if prepared is None:  # passage muet du morceau
                 run = []
                 continue
             curve = detector.ncc(prepared, prepared)
             i = int(np.argmax(curve))
-            if curve[i] >= MUSIC_LOUD and detector.consistent(prepared, i):
-                best = max(best, float(curve[i]))
-            run = (run + [curve])[-MUSIC_RUN:]
+            if curve[i] >= MUSIC_LOUD and detector.consistent(prepared, i) and (not best or curve[i] > best["score"]):
+                best = {"asset": asset["id"], "score": float(curve[i]), "floor": MUSIC_LOUD, "parts": [(i, prepared)]}
+            run = (run + [(curve, prepared)])[-MUSIC_RUN:]
             if len(run) == MUSIC_RUN:
-                n = len(run[0]) - (MUSIC_RUN - 1) * L
+                n = len(run[0][0]) - (MUSIC_RUN - 1) * L
                 if n > 0:
-                    aligned = run[0][:n].copy()
+                    aligned = run[0][0][:n].copy()
                     for r in range(1, MUSIC_RUN):
-                        np.minimum(aligned, run[r][r * L : r * L + n], out=aligned)
-                    i = int(np.argmax(aligned))
-                    if aligned[i] >= MUSIC_FLOOR:
-                        best = max(best, float(aligned[i]))
+                        np.minimum(aligned, run[r][0][r * L : r * L + n], out=aligned)
+                    for i, score in Detector.peaks(aligned, MUSIC_FLOOR, int(0.25 * sr), 5):
+                        if (best and score <= best["score"]) or not sharp_peak(aligned, i, sr):
+                            continue
+                        first = k - MUSIC_RUN + 1  # extrait du morceau calé en i
+                        if score < MUSIC_SURE and _aligned_run(detector, track, first, i, L) < MUSIC_LONG_RUN:
+                            continue  # calage faible et court : peut-être un autre morceau au même tempo
+                        parts = [(i + r * L, run[r][1]) for r in range(MUSIC_RUN)]
+                        best = {"asset": asset["id"], "score": float(score), "floor": MUSIC_FLOOR, "parts": parts}
         if best:
-            music_best[asset["id"]] = max(music_best.get(asset["id"], 0.0), best)
+            candidates.append(best)
+    # Deux morceaux trouvés au même endroit (même boucle de batterie, intro d'un autre morceau…) :
+    # on retire le plus net et on regarde si l'autre est encore là, comme pour les bruitages.
+    accepted: list[tuple[int, np.ndarray, float]] = []
+    for cand in sorted(candidates, key=lambda c: -c["score"]):
+        scores, gains = [], []
+        for idx, prepared in cand["parts"]:
+            others = [(k, t, g) for k, t, g in accepted if k < idx + L and idx < k + len(t)]
+            score, gain = detector.residual_score(prepared, idx, others)
+            scores.append(score)
+            gains.append(gain)
+        if min(scores) >= cand["floor"] or not any(k < idx + L and idx < k + len(t) for idx, _ in cand["parts"] for k, t, _ in accepted):
+            accepted += [(idx, prepared, g) for (idx, prepared), g in zip(cand["parts"], gains)]
+            music_best[cand["asset"]] = max(music_best.get(cand["asset"], 0.0), cand["score"])
     music_found = [{"asset": a, "score": round(v, 3)} for a, v in music_best.items()]
 
     return {
         "hits": hits,
         "music": sorted(music_found, key=lambda m: -m["score"]),
         "skipped": skipped,
+        "skipped_music": skipped_music,
         "unreliable": unreliable,
         "too_short": too_short,
         "tested": len(templates) + len(music_assets),
+        "detector": SFX_DETECTOR_VERSION,
     }

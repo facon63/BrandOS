@@ -39,15 +39,21 @@ $("#btn-quit").addEventListener("click", async () => {
   // État réel du serveur (pas celui du dernier onglet ouvert)
   let episodes = state.projects.some((p) => p.busy);
   let videos = false;
+  let guide = false;
   try {
     const [projects, refs] = await Promise.all([api("/api/projects"), api("/api/references")]);
     episodes = projects.some((p) => p.busy);
-    videos = refs.references.some((r) => r.busy) || refs.guide_busy;
+    videos = refs.references.some((r) => r.busy);
+    guide = refs.guide_busy;
   } catch (_) { /* on garde ce qu'on sait */ }
-  const resume = [episodes ? "« Continuer » sur l'épisode" : "", videos ? "« Reprendre l'analyse » dans Mes vidéos" : ""].filter(Boolean).join(", ");
-  const msg = episodes || videos
-    ? `Un traitement est en cours : il sera interrompu (tu pourras le reprendre avec ${resume}). Quitter KrokCut ?`
-    : "Quitter KrokCut ?";
+  const resume = [
+    episodes ? "« Continuer » sur l'épisode" : "",
+    videos ? "« Reprendre l'analyse » dans Mes vidéos" : "",
+  ].filter(Boolean).join(", ");
+  const parts = [];
+  if (episodes || videos) parts.push(`Un traitement est en cours : il sera interrompu (tu pourras le reprendre avec ${resume}).`);
+  if (guide) parts.push("La mise à jour du guide de style sera refaite au prochain démarrage.");
+  const msg = parts.length ? `${parts.join(" ")} Quitter KrokCut ?` : "Quitter KrokCut ?";
   if (!confirm(msg)) return;
   try { await api("/api/quit", { method: "POST" }); } catch (_) { /* le serveur s'arrête */ }
   document.body.innerHTML = '<div class="card" style="max-width:520px;margin:15vh auto;text-align:center"><h2>KrokCut est fermé 👋</h2><p class="muted">Pour le rouvrir : double-clic sur l\'app KrokCut.</p></div>';
@@ -60,6 +66,7 @@ $$(".tab[data-view]").forEach((tab) =>
     if (tab.dataset.view === "library") loadLibrary();
     if (tab.dataset.view === "settings") loadSettings();
     if (tab.dataset.view === "references") loadReferences();
+    if (tab.dataset.view === "projects") checkReferences();
   })
 );
 
@@ -311,8 +318,8 @@ async function refreshProject(full = false) {
 
   clearTimeout(state.pollTimer);
   if (busy) state.pollTimer = setTimeout(() => refreshProject(), 1500);
-  else if (state.wasBusy) loadProjects();
-  state.wasBusy = !!busy;
+  if ((busy || null) !== (state.lastBusy || null)) loadProjects();  // en file d'attente → en cours → fini
+  state.lastBusy = busy || null;
 }
 
 async function runProject(body) {
@@ -607,9 +614,10 @@ async function checkClaude() {
 async function checkReferences() {
   try {
     const data = await api("/api/references");
-    const n = data.guide ? data.guide.sources.length : 0;
-    const failed = data.references.filter((r) => r.steps.some((s) => s.status === "error")).length;
-    const waiting = data.references.filter((r) => !r.steps.some((s) => s.status === "error") && !r.steps.every((s) => s.status === "done")).length;
+    const inGuide = new Set(data.guide ? data.guide.sources : []);
+    const n = data.references.filter((r) => inGuide.has(r.id)).length;
+    const failed = data.references.filter((r) => !inGuide.has(r.id) && r.steps.some((s) => s.status === "error")).length;
+    const waiting = data.references.filter((r) => !inGuide.has(r.id) && !r.steps.some((s) => s.status === "error") && !r.steps.every((s) => s.status === "done")).length;
     const ignored = data.guide ? (data.guide.ignored || []).length : 0;
     const extra = [
       waiting ? `${waiting} en cours d'analyse ou à reprendre` : "",
@@ -672,15 +680,17 @@ function refMetrics(m) {
 async function loadReferences() {
   let data;
   try { data = await api("/api/references"); } catch (err) { return toast(err.message, true); }
+  const wasBusy = state.refsBusy;
   state.refsBusy = data.references.some((r) => r.busy) || data.guide_busy;
   renderReferences(data);
+  if (wasBusy && !state.refsBusy) checkReferences();  // le message de l'onglet Épisodes suit
   clearTimeout(state.refTimer);
   if (state.refsBusy && !$("#view-references").classList.contains("hidden")) state.refTimer = setTimeout(loadReferences, 2000);
 }
 
 /** Ce qui change l'affichage d'une analyse : on ne la recharge que dans ce cas. */
 function refSignature(r) {
-  return JSON.stringify([r.steps.map((s) => s.status), r.analysis_source, r.metrics.sfx_top || []]);
+  return JSON.stringify([r.steps.map((s) => [s.status, s.finished]), r.analysis_source, r.metrics.sfx_top || []]);
 }
 
 function renderReferences(data) {
@@ -765,20 +775,23 @@ function renderReferences(data) {
   $("#guide-error").textContent = problems;
   const n = g ? g.sources.length : 0;
   const plural = (k, word) => `${word}${k > 1 ? "s" : ""}`;
+  const rereading = data.references.filter((r) => r.busy).length;
   const how = !g ? ""
     : g.source === "claude" ? "rédigé par Claude"
-      : data.claude ? "mesures seules : clique sur « Mettre à jour » pour que Claude relise les vidéos"
-        : "mesures seules (ajoute une clé Claude dans Réglages pour un vrai guide)";
+      : data.claude && rereading ? `mesures seules pour l'instant : ${rereading} vidéo${rereading > 1 ? "s" : ""} en cours d'analyse, le guide sera mis à jour ensuite`
+        : data.claude ? "mesures seules : clique sur « Mettre à jour » pour que Claude relise les vidéos"
+          : "mesures seules (ajoute une clé Claude dans Réglages pour un vrai guide)";
   const notes = [];
   if (g && (g.ignored || []).length) notes.push(`${plural(g.ignored.length, "ignorée")} car trop ${plural(g.ignored.length, "longue")} (plus d'1 h, sûrement des rush) : ${g.ignored.join(", ")}`);
   if (g && (g.shorts || []).length) notes.push(`${plural(g.shorts.length, "vidéo")} de moins de 3 min (Shorts ?) non ${plural(g.shorts.length, "comptée")} dans les durées et rythmes : ${g.shorts.join(", ")}`);
+  if (g && (g.unusual || []).length) notes.push(`durée inhabituelle (épisode spécial ?), non ${plural(g.unusual.length, "comptée")} dans les durées et rythmes : ${g.unusual.join(", ")}`);
   if (g && (g.claude_left_out || []).length) notes.push(`les ${g.claude_left_out.length} plus anciennes n'ont pas été relues par Claude (trop de vidéos d'un coup)`);
   $("#guide-meta").textContent = data.guide_busy
     ? "Mise à jour du guide en cours…"
     : g
       ? `Tiré de ${n} ${plural(n, "vidéo")} · ${how} · mis à jour le ${new Date(g.updated).toLocaleString("fr-FR")}` + notes.map((x) => ` · ${x}`).join("")
       : "";
-  $("#guide-rebuild").disabled = data.guide_busy;
+  $("#guide-rebuild").disabled = data.guide_busy || rereading > 0;
   $("#guide-text").innerHTML = g ? miniMarkdown(g.text) : "";
   const examples = (g && g.examples) || [];
   $("#guide-examples-box").classList.toggle("hidden", !examples.length);
@@ -788,17 +801,22 @@ function renderReferences(data) {
   const suggested = (g && g.suggested) || { values: {}, sources: {} };
   const keys = Object.keys(suggested.values || {});
   $("#guide-suggest-box").classList.toggle("hidden", !keys.length);
-  // Le tableau n'est refait que si les suggestions changent : les cases cochées à la main restent
+  // Les lignes ne sont refaites que si les suggestions changent (les cases cochées à la main restent) ;
+  // la colonne « Actuel » suit toujours le style par défaut.
+  const show = (v) => (typeof v === "boolean" ? (v ? "oui" : "non") : v);
   const sig = JSON.stringify(suggested);
   if (keys.length && sig !== state.suggestSig) {
     state.suggestSig = sig;
-    const checked = new Set(suggested.checked || keys);
+    const measured = keys.filter((k) => String(suggested.sources[k] || "").startsWith("mesuré"));
+    const checked = new Set(suggested.checked || measured);  // ancien guide : seulement ce qui est mesuré
+    $("#guide-suggest").innerHTML = keys
+      .map((k) => `<tr><td><label class="check"><input type="checkbox" data-suggest="${esc(k)}" ${checked.has(k) ? "checked" : ""}> ${esc(SUGGEST_LABELS[k] || k)}</label></td><td data-current="${esc(k)}"></td><td><b>${esc(show(suggested.values[k]))}</b></td><td class="muted">${esc(suggested.sources[k] || "")}</td></tr>`)
+      .join("");
+  }
+  if (keys.length) {
     api("/api/style").then((current) => {
-      const show = (v) => (typeof v === "boolean" ? (v ? "oui" : "non") : v);
-      $("#guide-suggest").innerHTML = keys
-        .map((k) => `<tr><td><label class="check"><input type="checkbox" data-suggest="${esc(k)}" ${checked.has(k) ? "checked" : ""}> ${esc(SUGGEST_LABELS[k] || k)}</label></td><td>${esc(show(current[k]))}</td><td><b>${esc(show(suggested.values[k]))}</b></td><td class="muted">${esc(suggested.sources[k] || "")}</td></tr>`)
-        .join("");
-    }).catch(() => { state.suggestSig = null; });
+      $$("[data-current]").forEach((td) => { td.textContent = show(current[td.dataset.current]); });
+    }).catch(() => { /* on réessaiera au prochain rafraîchissement */ });
   }
   $("#ref-lib-hint").textContent = data.claude
     ? "Les bruitages ne sont reconnus que s'ils sont dans la bibliothèque (onglet Bibliothèque)."

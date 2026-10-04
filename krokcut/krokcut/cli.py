@@ -81,14 +81,19 @@ def cmd_library(args) -> None:
 
 def cmd_style(args) -> None:
     """Ajoute des vidéos déjà montées, les analyse et met à jour le guide de style."""
-    from .references import REF_STEP_IDS, ReferenceAnalyzer, ReferenceStore, build_guide
+    from .llm import claude_available
+    from .references import REF_STEP_IDS, ReferenceAnalyzer, ReferenceStore, build_guide, needs_claude, sfx_outdated
 
     cfg = AppConfig.load()
     store = ReferenceStore()
     for video in args.videos:
         doc = store.add(video)
         print(f"Analyse de {doc.state.name}…")
-        ok = ReferenceAnalyzer(doc, cfg, store).run()
+        if sfx_outdated(doc.state.metrics):  # mesurée par l'ancienne détection des bruitages
+            doc.invalidate(["sfx", "analyze"])
+        analysis = doc.read_json("analyse.json")
+        redo = "analyze" if analysis and claude_available(cfg) and needs_claude(doc, analysis) else None
+        ok = ReferenceAnalyzer(doc, cfg, store).run(redo)  # relancer la commande réessaie Claude
         doc.reload()
         for step in REF_STEP_IDS:
             st = doc.state.steps[step]

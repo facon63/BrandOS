@@ -110,14 +110,18 @@ Réglages → **Bible de la chaîne** : qui est Krok, qui est Mil, vos personnag
 C'est là que KrokCut apprend **ce que vous attendez**. Dépose 3 à 5 vidéos représentatives que vous avez déjà montées et publiées (glisser-déposer, ou « Choisir sur le disque » pour ne pas les copier). Pour chacune, KrokCut :
 
 1. mesure la **durée** et le **rythme** (changements de plan par minute, durée médiane d'un plan, part de parole) ;
-2. **reconnaît dans le son les bruitages et musiques de votre bibliothèque** (à quel instant, combien de fois) : il apprend par exemple que le « vine boom » tombe juste après une vanne ;
+2. **reconnaît dans le son les bruitages et musiques de votre bibliothèque** (à quel instant, combien de fois), même mixés sous les voix : il apprend par exemple que le « vine boom » tombe juste après une vanne ;
 3. prend des **images clés** et **transcrit** ce que vous avez gardé au montage ;
 4. demande à **Claude** d'analyser le style : structure (teaser, parties, fin), ce qui est gardé, zooms, textes, persos et memes visibles à l'image, usage des bruitages, règles concrètes et exemples de moments.
 
-Avec toutes les vidéos analysées, KrokCut rédige un **guide de style** (visible dans l'onglet) qui est donné à Claude à chaque dérush et à chaque montage, avec des exemples de moments que vous avez gardés. Il propose aussi des **réglages de montage** (durée, bruitages par minute, zooms, textes, musique, teaser) : un bouton les applique au style par défaut.
+Avec toutes les vidéos analysées, KrokCut rédige un **guide de style** (visible dans l'onglet) qui est donné à Claude à chaque dérush et à chaque montage, avec des exemples de moments que vous avez gardés. Il propose aussi des **réglages de montage** (durée, bruitages par minute, zooms, textes, musique, teaser) : ce qui est **mesuré** sur vos vidéos est coché ; ce que Claude **estime** d'après quelques images (il n'entend pas le son) est à cocher vous-même. Le bouton applique les réglages cochés au style par défaut (nouveaux épisodes). La durée et le rythme réglés font foi : le guide n'est qu'un repère.
 
-- Les bruitages ne sont reconnus que s'ils sont dans la bibliothèque et utilisés tels quels (un son modifié ou absent n'est pas vu). Après avoir ajouté la bibliothèque, clique sur **Réanalyser**.
-- Sans clé Claude, seules les mesures sont utilisées (rythme, bruitages), pas l'analyse du style.
+- Les bruitages ne sont reconnus que s'ils sont dans la bibliothèque et utilisés tels quels (un son modifié ou absent n'est pas vu) : le nombre de bruitages mesuré est un **minimum**. Un bruitage très bas sous les voix (une quinzaine de dB ou plus) passe souvent inaperçu. Après avoir ajouté la bibliothèque, clique sur **Réanalyser**.
+- Une musique de la bibliothèque est reconnue quand environ 25 s d'affilée sont utilisées (même 20 dB sous les voix), ou quand elle passe seule (intro, générique). Un morceau qui lui ressemble beaucoup (même boucle de batterie, même tempo) peut rarement être confondu avec elle.
+- Les vidéos de moins de 3 min (Shorts), celles d'une durée inhabituelle (épisode spécial) et celles de plus d'1 h (des rush) ne comptent pas dans les durées et rythmes mesurés ; c'est indiqué dans l'onglet.
+- Sans clé Claude, seules les mesures sont utilisées (rythme, bruitages), pas l'analyse du style. Si vous ajoutez la clé plus tard, **↻ Mettre à jour** fait relire les vidéos par Claude. Si Claude ne répond pas (limite de débit, connexion…), la vidéo compte quand même avec ses mesures ; **Mettre à jour** réessaie.
+- Les vidéos de référence passent avant les épisodes en attente (pour que l'épisode profite du guide à jour) : l'épisode indique ce qu'il attend.
+- Analyse d'une vidéo d'1 h avec une très grosse bibliothèque de sons : comptez jusqu'à une vingtaine de minutes et 2 Go de mémoire.
 - Coût indicatif : de l'ordre de 10 à 30 centimes par vidéo analysée (images + transcription envoyées à Claude), plus quelques centimes pour rédiger le guide. La transcription des références utilise le modèle Whisper `small` (réglable : `references_whisper_model` dans `workspace/config.yaml`), plus rapide.
 - Pour corriger le guide, écris la bonne règle dans la **bible de la chaîne** : elle passe avant le guide.
 

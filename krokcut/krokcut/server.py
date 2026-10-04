@@ -24,7 +24,18 @@ from .jobs import JobManager
 from .library import Library
 from .llm import claude_available
 from .project import STEPS, Project
-from .references import REF_STEP_IDS, REF_STEPS, ReferenceDoc, ReferenceStore, too_long
+from .references import (
+    REF_STEP_IDS,
+    REF_STEPS,
+    ReferenceDoc,
+    ReferenceStore,
+    guide_outdated,
+    needs_claude,
+    refresh_suggestions,
+    remeasure_outdated_sfx,
+    sfx_outdated,
+    too_long,
+)
 
 WEB = Path(__file__).parent / "web"
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm", ".mts", ".ts", ".flv"}
@@ -33,8 +44,18 @@ VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm", ".mts", ".ts", ".f
 async def lifespan(_app: FastAPI):
     for project in Project.list():  # un traitement coupé par une fermeture de l'app reprendra proprement
         project.recover_interrupted()
-    for ref in ReferenceStore().list():
+    store = ReferenceStore()
+    for ref in store.list():
         ref.recover_interrupted()
+    try:
+        refresh_suggestions(store)  # guide d'une version précédente : réglages suggérés recalculés
+        for doc in remeasure_outdated_sfx(store):  # bruitages mesurés par l'ancienne détection
+            if not jobs.busy(doc.id, "reference"):
+                jobs.submit(doc.id, kind="reference")
+        if guide_outdated(store):  # mise à jour du guide interrompue : on la refait
+            jobs.submit_guide()
+    except Exception:  # le guide ne doit jamais empêcher KrokCut de démarrer
+        pass
     yield
 
 
@@ -570,13 +591,18 @@ def reference_thumb(ref_id: str):
 @app.post("/api/guide/rebuild")
 def rebuild_guide():
     """Met à jour le guide. Avec une clé Claude, les vidéos analysées sans Claude (pas de clé à
-    l'époque, ou Claude indisponible) sont d'abord relues par Claude ; le guide suit tout seul."""
+    l'époque, Claude indisponible) ou sur d'anciennes mesures de bruitages sont d'abord relues par
+    Claude ; le guide suit tout seul."""
     store = ReferenceStore()
     reanalysing = 0
     if claude_available(AppConfig.load()):
         for doc, analysis in store.analyses():
-            if analysis.get("source") != "claude" and not too_long(doc) and not jobs.busy(doc.id, "reference"):
-                jobs.submit(doc.id, from_step="analyze", kind="reference")
+            if needs_claude(doc, analysis) and not too_long(doc) and not jobs.busy(doc.id, "reference"):
+                if sfx_outdated(doc.state.metrics):  # bruitages à remesurer d'abord (sans refaire images ni transcription)
+                    doc.invalidate(["sfx", "analyze"])
+                    jobs.submit(doc.id, kind="reference")
+                else:
+                    jobs.submit(doc.id, from_step="analyze", kind="reference")
                 reanalysing += 1
     if not reanalysing:
         jobs.submit_guide()
@@ -593,7 +619,10 @@ def apply_guide_style(data: ApplyGuide | None = None):
     guide = ReferenceStore().guide()
     suggested = (guide or {}).get("suggested") or {}
     values = suggested.get("values") or {}
-    fields = data.fields if data and data.fields is not None else suggested.get("checked", list(values))
+    default = suggested.get("checked")
+    if default is None:  # ancien guide : seulement ce qui est mesuré
+        default = [k for k, src in (suggested.get("sources") or {}).items() if str(src).startswith("mesuré")]
+    fields = data.fields if data and data.fields is not None else default
     values = {k: v for k, v in values.items() if k in fields}
     if not values:
         raise HTTPException(400, "Aucun réglage choisi.")
