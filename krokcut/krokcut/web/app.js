@@ -14,9 +14,27 @@ async function api(path, options = {}) {
   if (!res.ok) {
     let detail = res.statusText;
     try { detail = (await res.json()).detail || detail; } catch (_) { /* pas de JSON */ }
+    if (res.status === 404 && detail === "Not Found") detail = OUTDATED_MSG;  // fonction inconnue du serveur
     throw new Error(detail);
   }
   return res.json();
+}
+
+const OUTDATED_MSG = "KrokCut a été mis à jour, mais l'ancienne version tourne encore : clique sur « Quitter » puis rouvre l'app KrokCut.";
+
+/** Serveur lancé avant une mise à jour : on le dit tout de suite, en haut de la page. */
+async function checkVersion() {
+  let current = true;
+  try {
+    const res = await fetch("/api/version");
+    current = res.ok && (await res.json()).current;
+  } catch (_) { return; /* serveur injoignable : les autres messages le diront */ }
+  if (!current) {
+    const el = $("#banner");
+    el.textContent = `⚠️ ${OUTDATED_MSG}`;
+    el.style.background = "#3a1616";
+    el.classList.remove("hidden");
+  }
 }
 
 function fmt(t) {
@@ -632,6 +650,7 @@ async function checkReferences() {
   } catch (_) { /* pas grave */ }
 }
 
+checkVersion();
 checkClaude();
 checkReferences();
 loadProjects();

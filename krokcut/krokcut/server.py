@@ -126,6 +126,26 @@ def _summary(p: Project) -> dict:
     }
 
 
+def code_fingerprint() -> str:
+    """Empreinte du code installé (Python + interface), relue sur le disque à chaque appel."""
+    digest = hashlib.sha1()
+    package = Path(__file__).parent
+    for path in sorted([*package.glob("*.py"), *WEB.glob("*")]):
+        if path.is_file():
+            digest.update(path.name.encode())
+            digest.update(path.read_bytes())
+    return digest.hexdigest()[:12]
+
+
+RUNNING_BUILD = code_fingerprint()  # le code avec lequel ce serveur a démarré
+
+
+@app.get("/api/version")
+def version():
+    """« current » est faux si KrokCut a été mis à jour pendant qu'il tournait : il faut le relancer."""
+    return {"version": __version__, "build": RUNNING_BUILD, "current": RUNNING_BUILD == code_fingerprint()}
+
+
 def _assets_version() -> str:
     digest = hashlib.sha1()
     for name in ("app.js", "style.css"):

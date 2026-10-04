@@ -42,6 +42,28 @@ jobs:
           curl -fs http://127.0.0.1:8765/ | grep -q KrokCut
           echo "Interface OK"
 
+      - name: Mise à jour pendant que KrokCut tourne (l'ancienne version ne doit pas rester en place)
+        env:
+          KROKCUT_REF: ${{ github.ref_name }}
+          KROKCUT_NO_OPEN: "1"
+        run: |
+          URL=http://127.0.0.1:8765
+          # Le code change sur le disque : le serveur en cours devient une « ancienne version »
+          echo "/* ancienne version */" >> ~/KrokCut/krokcut/web/style.css
+          curl -fs $URL/api/version | grep '"current":false'
+          # Double-clic sur l'app : elle doit relancer le serveur avec le nouveau code
+          open ~/Applications/KrokCut.app
+          for i in $(seq 1 120); do curl -fs $URL/api/version | grep '"current":true' && break; sleep 1; done
+          curl -fs $URL/api/version | grep '"current":true'
+          # La commande de mise à jour doit fermer KrokCut s'il est ouvert
+          bash krokcut/install-mac.sh
+          if curl -fs $URL/api/config >/dev/null; then echo "KrokCut tourne encore après la mise à jour"; exit 1; fi
+          open ~/Applications/KrokCut.app
+          for i in $(seq 1 120); do curl -fs $URL/api/config >/dev/null && break; sleep 1; done
+          curl -fs $URL/api/version | grep '"current":true'
+          curl -fs $URL/api/references >/dev/null
+          echo "Mise à jour OK"
+
       - name: Tests (rendu ffmpeg réel)
         run: |
           ~/KrokCut/bin/uv pip install --python ~/KrokCut/.venv/bin/python pytest jsonschema httpx

@@ -39,6 +39,15 @@ else
   SRC="$(find "$TMP" -mindepth 2 -maxdepth 2 -type d -name krokcut | head -1)"
   [ -n "$SRC" ] || fail "Archive inattendue : dossier krokcut introuvable."
 fi
+# KrokCut ouvert pendant la mise à jour : on le ferme, sinon l'ancienne version continuerait de tourner
+if curl -fs http://127.0.0.1:8765/api/config >/dev/null 2>&1; then
+  echo "KrokCut est ouvert : il est fermé pour la mise à jour (un traitement en cours reprendra avec « Continuer »)."
+  curl -fs -X POST http://127.0.0.1:8765/api/quit >/dev/null 2>&1 || true
+  for _ in $(seq 1 40); do
+    curl -fs http://127.0.0.1:8765/api/config >/dev/null 2>&1 || break
+    sleep 0.25
+  done
+fi
 # Met à jour le code sans toucher aux épisodes, réglages, Python ni ffmpeg déjà installés
 find "$DEST" -mindepth 1 -maxdepth 1 ! -name workspace ! -name .venv ! -name bin ! -name python -exec rm -rf {} +
 (cd "$SRC" && tar -cf - --exclude workspace --exclude .venv --exclude bin --exclude python \

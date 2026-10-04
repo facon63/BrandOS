@@ -9,6 +9,7 @@ def test_api_smoke(workspace, rushes, library_dir):
     assert "KrokCut" in page.text and page.headers["cache-control"] == "no-cache"
     assert '"/static/app.js?v=' in page.text and '"/static/style.css?v=' in page.text  # jamais l'ancien script en cache
     assert client.get("/static/app.js").headers["cache-control"] == "no-cache"
+    assert client.get("/api/version").json()["current"] is True
     cfg = client.get("/api/config").json()
     assert cfg["claude"] is False and cfg["model"] == "claude-opus-5-5"
 
