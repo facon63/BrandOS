@@ -51,16 +51,21 @@ jobs:
           # Le code change sur le disque : le serveur en cours devient une « ancienne version »
           echo "/* ancienne version */" >> ~/KrokCut/krokcut/web/style.css
           curl -fs $URL/api/version | grep '"current":false'
-          # Double-clic sur l'app : elle doit relancer le serveur avec le nouveau code
+          # Double-clic sur l'app : elle doit relancer le serveur avec le nouveau code.
+          # On attend d'abord que l'app du lancement précédent soit fermée : tant qu'elle est
+          # ouverte, macOS se contente de la remettre au premier plan sans relancer son script.
+          for i in $(seq 1 60); do pgrep -f "KrokCut.app/Contents/MacOS" >/dev/null || break; sleep 0.5; done
           open ~/Applications/KrokCut.app
           for i in $(seq 1 120); do curl -fs $URL/api/version | grep '"current":true' && break; sleep 1; done
-          curl -fs $URL/api/version | grep '"current":true'
+          curl -fs $URL/api/version | grep '"current":true' \
+            || { pgrep -fl KrokCut; tail -20 ~/KrokCut/workspace/serveur.log; exit 1; }
           # Un dossier personnel rangé dans ~/KrokCut (bibliothèque de sons…) doit survivre à la mise à jour
           mkdir -p ~/KrokCut/"krok et mil"/sons && echo son > ~/KrokCut/"krok et mil"/sons/boing.wav
           # La commande de mise à jour doit fermer KrokCut s'il est ouvert
           bash krokcut/install-mac.sh
           test -f ~/KrokCut/"krok et mil"/sons/boing.wav || { echo "La mise à jour a supprimé un dossier personnel"; exit 1; }
           if curl -fs $URL/api/config >/dev/null; then echo "KrokCut tourne encore après la mise à jour"; exit 1; fi
+          for i in $(seq 1 60); do pgrep -f "KrokCut.app/Contents/MacOS" >/dev/null || break; sleep 0.5; done
           open ~/Applications/KrokCut.app
           for i in $(seq 1 120); do curl -fs $URL/api/config >/dev/null && break; sleep 1; done
           curl -fs $URL/api/version | grep '"current":true'
