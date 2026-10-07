@@ -217,29 +217,38 @@ def write_pcm(path: Path, x: np.ndarray) -> Path:
 
 
 VOWELS = [  # formants (Hz) et largeurs de bande : a, i, o, é, u
-    [(730, 90), (1090, 110), (2440, 160)],
-    [(300, 60), (2250, 150), (3000, 200)],
+    [(730, 90), (1090, 110), (2440, 170)],
+    [(300, 60), (2250, 100), (3000, 170)],
     [(500, 80), (850, 100), (2400, 160)],
-    [(450, 70), (1900, 130), (2600, 170)],
+    [(450, 70), (1900, 110), (2600, 160)],
     [(320, 60), (800, 90), (2250, 150)],
 ]
 
 
+def _formant_gain(f: np.ndarray, formants) -> np.ndarray:
+    """Cascade de résonateurs du 2e ordre (gain 1 à 0 Hz) : l'enveloppe spectrale d'une voyelle."""
+    g = np.ones_like(f, dtype=np.float64)
+    for F, B in formants:
+        g *= F**2 / np.sqrt((F**2 - f**2) ** 2 + (f * B) ** 2)
+    return g
+
+
 def _syllable(rng: np.random.Generator, dur: float, f0: float, f0_end: float, sr: int = SR) -> np.ndarray:
-    """Voyelle à formants sur une f0 qui glisse et tremble, précédée d'une consonne bruitée."""
+    """Voyelle (source harmonique en 1/k filtrée par les formants) sur une f0 qui glisse et tremble,
+    précédée d'une consonne bruitée."""
     n = int(dur * sr)
     t = np.arange(n) / sr
     f = np.linspace(f0, f0_end, n) * (1 + 0.02 * np.sin(2 * np.pi * rng.uniform(4, 7) * t))
     ph = 2 * np.pi * np.cumsum(f) / sr
     formants = VOWELS[int(rng.integers(len(VOWELS)))]
-    x = np.zeros(n)
     fmean = 0.5 * (f0 + f0_end)
-    for k in range(1, int(7000 / fmean)):
-        fk = k * fmean
-        gain = sum(np.exp(-0.5 * ((fk - F) / bw) ** 2) for F, bw in formants) + 0.03
-        x += gain * np.sin(k * ph + rng.uniform(0, 2 * np.pi)) / np.sqrt(k)
+    k = np.arange(1, int(7000 / fmean))
+    gains = _formant_gain(k * fmean, formants) / k
+    x = np.zeros(n)
+    for kk, gain in zip(k, gains):
+        x += gain * np.sin(kk * ph + rng.uniform(0, 2 * np.pi))
     env = np.sin(np.pi * np.arange(n) / n) ** 0.6
-    x *= env
+    x *= env / (np.abs(x).max() + 1e-9)
     cons = int(rng.uniform(0.02, 0.06) * sr)  # consonne : bruit bref à l'attaque
     x[:cons] += 0.3 * rng.standard_normal(cons) * np.linspace(1, 0.2, cons)
     return x / (np.abs(x).max() + 1e-9)
@@ -354,15 +363,12 @@ def boum(level: float = 0.7) -> np.ndarray:
 
 
 def whoosh(d: float = 0.5, level: float = 0.35, seed: int = 9) -> np.ndarray:
-    """Bruit en cloche passe-haut."""
+    """Bruit en cloche, penché vers les aigus (passe-haut doux du 1er ordre)."""
     rng = np.random.default_rng(seed)
     n = int(d * SR)
-    x = rng.standard_normal(n)
-    spec = np.fft.rfft(x)
-    f = np.fft.rfftfreq(n, 1 / SR)
-    spec *= np.clip((f - 1500) / 1500, 0, 1)  # passe-haut doux
-    x = np.fft.irfft(spec, n)
-    env = np.sin(np.pi * np.arange(n) / n) ** 2
+    noise = rng.standard_normal(n + 1)
+    x = noise[1:] + 1.5 * np.diff(noise)
+    env = np.sin(np.pi * np.arange(n) / n)
     return (level * env * x / (np.abs(x).max() + 1e-9)).astype(np.float32)
 
 
@@ -373,11 +379,10 @@ def ding(level: float = 0.3) -> np.ndarray:
             * np.minimum(1, t / 0.002)).astype(np.float32)
 
 
-def clic(level: float = 0.8, seed: int = 11) -> np.ndarray:
-    """Coup bref de 5 ms."""
-    rng = np.random.default_rng(seed)
-    n = int(0.005 * SR)
-    return (level * np.linspace(1, 0, n) * rng.standard_normal(n)).clip(-1, 1).astype(np.float32)
+def clic(level: float = 0.8) -> np.ndarray:
+    """Coup bref de 5 ms (sinus amorti à 3 kHz, sans écrêtage)."""
+    t = _t(0.005)
+    return (level * np.exp(-t / 0.002) * np.sin(2 * np.pi * 3000 * t)).astype(np.float32)
 
 
 def sature(d: float = 0.6) -> np.ndarray:
@@ -386,17 +391,17 @@ def sature(d: float = 0.6) -> np.ndarray:
     return (np.clip(3 * np.sin(2 * np.pi * 400 * t) * np.sign(np.sin(2 * np.pi * 7 * t) + 0.3), -1, 1) * 0.99).astype(np.float32)
 
 
-def montee(d: float = 2.0, level: float = 0.4, seed: int = 13) -> np.ndarray:
-    """Riser : bruit + sinus qui montent en volume et en hauteur, coupés net."""
+def montee(d: float = 2.0, level: float = 0.5, seed: int = 13) -> np.ndarray:
+    """Riser : bruit + sinus qui montent (en hauteur, et de 30 dB en volume, régulièrement), coupés net."""
     rng = np.random.default_rng(seed)
     t = _t(d)
     f = 200 + 1200 * (t / d) ** 2
-    x = 0.5 * np.sin(2 * np.pi * np.cumsum(f) / SR) + 0.5 * rng.standard_normal(len(t)) * 0.4
-    env = (t / d) ** 2
+    x = 0.5 * np.sin(2 * np.pi * np.cumsum(f) / SR) + 0.2 * rng.standard_normal(len(t))
+    env = 10 ** ((-30 + 30 * t / d) / 20)
     return (level * env * x).astype(np.float32)
 
 
-def glissando(d: float = 0.5, f0: float = 300.0, f1: float = 900.0, level: float = 0.3) -> np.ndarray:
+def glissando(d: float = 0.5, f0: float = 300.0, f1: float = 900.0, level: float = 0.4) -> np.ndarray:
     """Son cartoon : chirp 300 → 900 Hz."""
     t = _t(d)
     f = f0 * (f1 / f0) ** (t / d)
