@@ -7,13 +7,13 @@ téléchargés et vérifiés : une coupure en plein téléchargement ne laisse j
 
 from __future__ import annotations
 
+import http.client
 import os
 import platform
 import shutil
 import ssl
 import subprocess
 import sys
-import tempfile
 import threading
 import urllib.request
 import zipfile
@@ -37,10 +37,20 @@ def repair_supported() -> bool:
 def sources(prog: str, machine: str | None = None) -> list[str]:
     machine = machine or platform.machine()
     intel = machine in ("x86_64", "amd64", "i386")
-    urls = [MARTIN_RIEDL.format(arch="amd64" if intel else "arm64", prog=prog)]
-    if intel:
-        urls.append(EVERMEET[prog])
-    return urls
+    # evermeet (Intel) en dernier recours, même sur Apple Silicon : il y tourne avec Rosetta, et la
+    # vérification qui suit le refuse si Rosetta n'est pas installé.
+    return [MARTIN_RIEDL.format(arch="amd64" if intel else "arm64", prog=prog), EVERMEET[prog]]
+
+
+TMP_NAME = ".ffmpeg-telechargement"
+
+
+def clean_repair_leftovers(bin_dir: Path | None = None) -> None:
+    """Dossiers temporaires laissés par une réparation interrompue (KrokCut fermé en plein téléchargement)."""
+    bin_dir = bin_dir or APP_DIR / "bin"
+    if bin_dir.is_dir():
+        for leftover in bin_dir.glob(".ffmpeg-*"):
+            shutil.rmtree(leftover, ignore_errors=True)
 
 
 def _ssl_context() -> ssl.SSLContext:
@@ -98,8 +108,10 @@ def install(
     """Télécharge ffmpeg et ffprobe dans `bin_dir` (~/KrokCut/bin par défaut)."""
     bin_dir = bin_dir or APP_DIR / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=bin_dir, prefix=".ffmpeg-") as tmp_name:
-        tmp = Path(tmp_name)
+    clean_repair_leftovers(bin_dir)
+    tmp = bin_dir / TMP_NAME  # dans bin/ : même disque, le remplacement final est instantané
+    tmp.mkdir()
+    try:
         for i, prog in enumerate(PROGRAMS):
             errors = []
             for url in (urls or {}).get(prog) or sources(prog, machine):
@@ -108,14 +120,16 @@ def install(
                     _download(url, tmp / f"{prog}.zip", on_progress and (lambda f, i=i: on_progress((i + f) / len(PROGRAMS))))
                     _extract(tmp / f"{prog}.zip", prog, tmp / prog)
                     break
-                except (OSError, zipfile.BadZipFile, FFmpegError) as exc:
-                    errors.append(f"{url} : {exc}")
+                except (OSError, http.client.HTTPException, zipfile.BadZipFile, EOFError, FFmpegError) as exc:
+                    errors.append(f"{url} : {exc!r}" if not str(exc) else f"{url} : {exc}")
             else:
                 raise FFmpegError(f"Téléchargement de {prog} impossible (connexion internet ?). " + " ; ".join(errors))
         if not works(tmp):
             raise FFmpegError("Le ffmpeg téléchargé ne fonctionne pas sur ce Mac.")
         for prog in PROGRAMS:
             os.replace(tmp / prog, bin_dir / prog)  # remplace aussi un lien cassé vers un ancien ffmpeg
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     log("ffmpeg réparé.")
     return bin_dir
 

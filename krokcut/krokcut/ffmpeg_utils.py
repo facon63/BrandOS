@@ -22,24 +22,32 @@ APP_DIR = Path(__file__).resolve().parent.parent  # ~/KrokCut : l'installeur Mac
 # Emplacements habituels (Homebrew Apple Silicon / Intel, MacPorts) : l'app lancée depuis le Finder
 # hérite d'un PATH minimal qui ne les contient pas.
 EXTRA_DIRS = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"]
-MISSING_MARK = "' est introuvable"  # repère stable : « 'ffmpeg' est introuvable … »
+# Repères stables des messages (« 'ffmpeg' est introuvable … », « 'ffmpeg' ne se lance pas … ») : ils
+# permettent de reconnaître les traitements arrêtés faute de ffmpeg, pour les relancer une fois réparé.
+MISSING_MARK = "' est introuvable"
+BROKEN_MARK = "' ne se lance pas"
 
 
 class FFmpegError(RuntimeError):
     pass
 
 
-def search_dirs() -> list[Path]:
+class FFmpegUnavailable(FFmpegError):
+    """ffmpeg ou ffprobe absent, ou présent mais impossible à lancer : rien ne marchera avant réparation."""
+
+
+def search_dirs(windows: bool | None = None) -> list[Path]:
     """Dossiers où chercher ffmpeg/ffprobe, du plus spécifique au plus général."""
+    windows = os.name == "nt" if windows is None else windows
     dirs: list[Path] = []
     custom = os.environ.get("KROKCUT_FFMPEG_DIR")
     if custom:
         dirs.append(Path(custom).expanduser())
     dirs.append(APP_DIR / "bin")
-    if os.name == "nt":
-        dirs.append(APP_DIR / "ffmpeg" / "bin")
+    if windows:  # ffmpeg.exe posé à côté de KrokCut, comme le trouvait l'ancienne recherche
+        dirs += [APP_DIR / "ffmpeg" / "bin", APP_DIR, Path.cwd()]
     dirs += [Path(d) for d in os.environ.get("PATH", "").split(os.pathsep) if d]
-    if os.name != "nt":
+    if not windows:
         dirs += [Path(d) for d in EXTRA_DIRS]
     unique: list[Path] = []
     for d in dirs:
@@ -49,54 +57,100 @@ def search_dirs() -> list[Path]:
 
 
 def _usable(path: Path) -> bool:
-    # is_file() suit les liens : un lien cassé (ffmpeg de Homebrew désinstallé…) est ignoré
-    return path.is_file() and os.access(path, os.X_OK)
+    # os.path.isfile suit les liens (un lien cassé est ignoré) et ne lève jamais d'erreur, même sur un
+    # dossier du PATH qu'on n'a pas le droit de lire : on passe simplement au suivant.
+    return os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+_LAUNCH_CACHE: dict[tuple, str] = {}
+
+
+def launch_problem(path: str) -> str:
+    """« » si le programme se lance ; sinon pourquoi (mauvais processeur, fichier abîmé…). Mis en cache."""
+    try:
+        st = os.stat(path)
+    except OSError as exc:
+        return exc.strerror or str(exc)
+    key = (path, st.st_ino, st.st_mtime_ns, st.st_size)
+    if key not in _LAUNCH_CACHE:
+        try:
+            proc = subprocess.run([path, "-version"], capture_output=True, timeout=60)
+            _LAUNCH_CACHE[key] = "" if proc.returncode == 0 else f"il s'arrête avec le code {proc.returncode}"
+        except subprocess.TimeoutExpired:
+            _LAUNCH_CACHE[key] = "il ne répond pas"
+        except OSError as exc:
+            _LAUNCH_CACHE[key] = exc.strerror or str(exc)
+    return _LAUNCH_CACHE[key]
+
+
+def _locate(name: str) -> tuple[str | None, str]:
+    """(premier programme trouvé qui se lance, sinon le premier trouvé qui ne se lance pas et pourquoi)."""
+    exe = name + (".exe" if os.name == "nt" else "")
+    broken = ""
+    for d in search_dirs():
+        candidate = d / exe
+        if not _usable(candidate):
+            continue
+        problem = launch_problem(str(candidate))
+        if not problem:
+            return str(candidate), ""
+        broken = broken or f"{candidate} ({problem})"
+    return None, broken
 
 
 def find_binary(name: str) -> str | None:
-    exe = name + (".exe" if os.name == "nt" else "")
-    for d in search_dirs():
-        if _usable(d / exe):
-            return str(d / exe)
-    return None
+    return _locate(name)[0]
 
 
-def missing_message(name: str) -> str:
+def _fix_hint() -> str:
     if sys.platform == "darwin":
-        fix = (
+        return (
             "Clique sur « Réparer ffmpeg » en haut de la page de KrokCut, ou relance la commande "
             "d'installation de KrokCut dans le Terminal : elle réinstalle ffmpeg dans ~/KrokCut/bin."
         )
-    elif os.name == "nt":
-        fix = "Relance installer.bat (il installe ffmpeg), puis rouvre KrokCut."
-    else:
-        fix = "Installe ffmpeg (sudo apt install ffmpeg) ou définis KROKCUT_FFMPEG_DIR."
-    return f"'{name}{MISSING_MARK} : KrokCut ne peut pas lire les vidéos sans lui. {fix}"
+    if os.name == "nt":
+        return (
+            "Relance installer.bat (il installe ffmpeg avec winget). Si ça ne suffit pas, installe la version "
+            "complète (avec ffprobe) depuis https://ffmpeg.org/download.html et définis KROKCUT_FFMPEG_DIR "
+            "vers son dossier bin."
+        )
+    return "Installe ffmpeg (sudo apt install ffmpeg) ou définis KROKCUT_FFMPEG_DIR."
+
+
+def missing_message(name: str, broken: str = "") -> str:
+    if broken:
+        return f"'{name}{BROKEN_MARK} : {broken}. KrokCut ne peut pas lire les vidéos sans lui. {_fix_hint()}"
+    return f"'{name}{MISSING_MARK} : KrokCut ne peut pas lire les vidéos sans lui. {_fix_hint()}"
 
 
 def is_missing_error(text: str) -> bool:
-    """Erreur enregistrée parce que ffmpeg ou ffprobe manquait (ancien et nouveau message)."""
-    return any(f"'{name}{MISSING_MARK}" in (text or "") for name in ("ffmpeg", "ffprobe"))
+    """Erreur enregistrée parce que ffmpeg ou ffprobe manquait ou ne se lançait pas (anciens messages compris)."""
+    text = text or ""
+    return any(f"'{name}{mark}" in text for name in ("ffmpeg", "ffprobe") for mark in (MISSING_MARK, BROKEN_MARK))
 
 
 def binary(name: str) -> str:
     """Chemin de ffmpeg/ffprobe : KROKCUT_FFMPEG_DIR, ~/KrokCut/bin, le PATH, puis Homebrew."""
-    found = find_binary(name)
+    found, broken = _locate(name)
     if not found:
-        raise FFmpegError(missing_message(name))
+        raise FFmpegUnavailable(missing_message(name, broken))
     return found
 
 
 def ffmpeg_status() -> dict:
     """État affiché par l'interface (bandeau « ffmpeg introuvable » + bouton Réparer)."""
-    paths = {name: find_binary(name) for name in ("ffmpeg", "ffprobe")}
-    missing = [name for name, path in paths.items() if not path]
-    return {
-        "ok": not missing,
-        "ffmpeg": paths["ffmpeg"] or "",
-        "ffprobe": paths["ffprobe"] or "",
-        "error": missing_message(missing[0]) if missing else "",
-    }
+    paths, errors = {}, []
+    for name in ("ffmpeg", "ffprobe"):
+        found, broken = _locate(name)
+        paths[name] = found or ""
+        if not found:
+            errors.append(missing_message(name, broken))
+    return {"ok": not errors, "ffmpeg": paths["ffmpeg"], "ffprobe": paths["ffprobe"], "error": errors[0] if errors else ""}
+
+
+def _launch_error(program: str, exc: OSError) -> FFmpegUnavailable:
+    _LAUNCH_CACHE.clear()  # il se lançait au premier essai : on revérifiera tout au prochain appel
+    return FFmpegUnavailable(missing_message(Path(program).stem, f"{program} ({exc.strerror or exc})"))
 
 
 def _launch(cmd: Sequence[str], **kwargs):
@@ -104,14 +158,7 @@ def _launch(cmd: Sequence[str], **kwargs):
     try:
         return subprocess.run(cmd, **kwargs)
     except OSError as exc:  # mauvais processeur, fichier abîmé, droits…
-        raise FFmpegError(_launch_error(cmd[0], exc)) from exc
-
-
-def _launch_error(program: str, exc: OSError) -> str:
-    return (
-        f"Impossible de lancer {program} ({exc.strerror or exc}). "
-        + (missing_message(Path(program).stem).split(" : ", 1)[1] if sys.platform == "darwin" else "Réinstalle ffmpeg.")
-    )
+        raise _launch_error(cmd[0], exc) from exc
 
 
 def run_ffmpeg(
@@ -143,7 +190,7 @@ def run_ffmpeg(
             cwd=cwd,
         )
     except OSError as exc:
-        raise FFmpegError(_launch_error(cmd[0], exc)) from exc
+        raise _launch_error(cmd[0], exc) from exc
     assert proc.stdout is not None
     try:
         for line in proc.stdout:
@@ -329,6 +376,8 @@ def extract_frame(src: str | Path, t: float, dst: str | Path, *, width: int = 51
                 str(dst),
             ]
         )
+    except FFmpegUnavailable:
+        raise
     except FFmpegError:
         return False
     return Path(dst).exists()

@@ -29,7 +29,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .ffmpeg_utils import FFmpegError, run_ffmpeg
+from .ffmpeg_utils import FFmpegError, FFmpegUnavailable, run_ffmpeg
 
 DETECT_SR = 8000
 SFX_DETECTOR_VERSION = 2  # change quand la détection change : les anciennes mesures sont refaites
@@ -577,6 +577,8 @@ def detect_library_sounds(
     for asset in sfx_assets:
         try:
             raw = load_asset_audio(library.path_of(asset), cache_dir)
+        except FFmpegUnavailable:
+            raise
         except (FFmpegError, OSError):
             continue
         tpl = make_template(asset["id"], raw, sr)
@@ -646,6 +648,8 @@ def detect_library_sounds(
             on_progress((len(templates) + j) / max(1, total), asset["name"])
         try:
             trimmed = trim_silence(load_asset_audio(library.path_of(asset), cache_dir), sr)
+        except FFmpegUnavailable:
+            raise
         except (FFmpegError, OSError):
             continue
         if trimmed is None:

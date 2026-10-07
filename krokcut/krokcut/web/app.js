@@ -56,37 +56,49 @@ function toast(msg, isError = false) {
 // Sans ffmpeg, KrokCut ne peut ni lire ni monter une vidéo : on le dit en haut de la page, avec un
 // bouton qui le réinstalle (Mac), et on refuse les envois avant de copier des Go pour rien.
 let ffmpegState = { ok: true };
+let ffmpegRepairing = false;  // une réparation lancée depuis cette page est en cours
 async function checkFfmpeg() {
   try {
     ffmpegState = (await api("/api/config")).ffmpeg || { ok: true };
-  } catch (_) { return ffmpegState.ok; }
+  } catch (_) {
+    // serveur momentanément injoignable (fermé puis rouvert pendant la réparation) : on réessaie
+    if (ffmpegRepairing) setTimeout(checkFfmpeg, 3000);
+    return ffmpegState.ok;
+  }
+  const running = Boolean(ffmpegState.repair && ffmpegState.repair.running);
+  if (ffmpegRepairing && !running) {  // réparation finie (les vidéos sont déjà relancées côté serveur)
+    ffmpegRepairing = false;
+    if (ffmpegState.ok) {
+      toast("ffmpeg est réparé ✅ Les vidéos de « Mes vidéos » en erreur reprennent toutes seules ; pour un épisode en erreur, clique sur « Continuer ».");
+      loadReferences();
+      checkReferences();
+    }
+  }
+  if (running) {
+    ffmpegRepairing = true;
+    setTimeout(checkFfmpeg, 2000);
+  }
   renderFfmpeg();
-  if (ffmpegState.repair && ffmpegState.repair.running) setTimeout(checkFfmpeg, 2000);
   return ffmpegState.ok;
 }
 function renderFfmpeg() {
   const el = $("#ffmpeg-banner");
   const st = ffmpegState;
-  if (st.ok) {
-    if (!el.classList.contains("hidden") && renderFfmpeg.repairing) {
-      toast("ffmpeg est réparé ✅ Les vidéos de « Mes vidéos » en erreur reprennent toutes seules ; pour un épisode en erreur, clique sur « Continuer ».");
-    }
-    renderFfmpeg.repairing = false;
+  const repair = st.repair || {};
+  if (st.ok && !repair.running) {
     el.classList.add("hidden");
     return;
   }
-  const repair = st.repair || {};
-  renderFfmpeg.repairing = renderFfmpeg.repairing || repair.running;
   let action = "";
   if (repair.running) action = `<strong>Téléchargement de ffmpeg… ${Math.round((repair.progress || 0) * 100)} %</strong>`;
   else if (repair.supported) action = `<button id="ffmpeg-repair" class="primary small">Réparer ffmpeg</button>`;
-  el.innerHTML = `⚠️ ${esc(st.error)} ${action}${repair.error ? `<br>❌ La réparation a échoué : ${esc(repair.error)}` : ""}`;
+  el.innerHTML = `⚠️ ${esc(st.error || "Réparation de ffmpeg en cours.")} ${action}${repair.error ? `<br>❌ La réparation a échoué : ${esc(repair.error)}` : ""}`;
   el.classList.remove("hidden");
   const btn = $("#ffmpeg-repair");
   if (btn) btn.addEventListener("click", async () => {
     try {
       ffmpegState.repair = await api("/api/ffmpeg/repair", { method: "POST" });
-      renderFfmpeg.repairing = true;
+      ffmpegRepairing = true;
       renderFfmpeg();
       setTimeout(checkFfmpeg, 1000);
     } catch (err) { toast(err.message, true); }
@@ -585,6 +597,7 @@ async function updateAsset(id, changes) {
 }
 
 $("#lib-scan").addEventListener("click", async () => {
+  if (!(await ensureFfmpeg())) return;  // sans ffprobe, un scan viderait la bibliothèque
   $("#lib-scan").disabled = true;
   $("#lib-stats").textContent = "Scan en cours…";
   try {

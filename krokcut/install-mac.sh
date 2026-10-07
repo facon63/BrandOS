@@ -103,6 +103,7 @@ fetch_zip() {  # fetch_zip <url> <programme> <dossier> : télécharge et extrait
   [ -n "$found" ] || return 1
   cp "$found" "$3/$2" && chmod +x "$3/$2"
 }
+rm -rf "$DEST"/bin/.ffmpeg-*  # restes d'une réparation interrompue (bouton « Réparer ffmpeg »)
 # ffmpeg et ffprobe sont toujours installés ensemble, et seulement une fois les deux téléchargés et
 # vérifiés : une coupure réseau ne laisse jamais l'un sans l'autre (KrokCut ne pourrait plus lire de son).
 if ffmpeg_ok "$DEST/bin"; then
@@ -114,9 +115,11 @@ else
     MR_ARCH="arm64"
     [ "$ARCH" = "x86_64" ] && MR_ARCH="amd64"
     for prog in ffmpeg ffprobe; do
+      # evermeet (version Intel) en secours, même sur Apple Silicon où elle tourne avec Rosetta
+      # (sans Rosetta, la vérification ffmpeg_ok ci-dessous la refuse)
       fetch_zip "https://ffmpeg.martin-riedl.de/redirect/latest/macos/$MR_ARCH/release/$prog.zip" "$prog" "$NEW" \
-        || { [ "$ARCH" = "x86_64" ] && [ "$prog" = ffmpeg ] && fetch_zip "https://evermeet.cx/ffmpeg/getrelease/zip" ffmpeg "$NEW"; } \
-        || { [ "$ARCH" = "x86_64" ] && [ "$prog" = ffprobe ] && fetch_zip "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip" ffprobe "$NEW"; } \
+        || { [ "$prog" = ffmpeg ] && fetch_zip "https://evermeet.cx/ffmpeg/getrelease/zip" ffmpeg "$NEW"; } \
+        || { [ "$prog" = ffprobe ] && fetch_zip "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip" ffprobe "$NEW"; } \
         || true
     done
   fi

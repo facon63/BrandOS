@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from krokcut import ffmpeg_install, ffmpeg_utils
 from krokcut.ffmpeg_utils import (
     FFmpegError,
+    FFmpegUnavailable,
     binary,
     ffmpeg_status,
     is_missing_error,
@@ -83,19 +84,77 @@ def test_liens_casses_et_fichiers_non_executables_ignores(isolated, tmp_path):
     assert binary("ffmpeg") == str(tmp_path / "homebrew" / "ffmpeg")
 
 
-def test_programme_qui_ne_se_lance_pas(isolated, tmp_path):
-    bad = isolated / "bin" / "ffprobe"
-    bad.write_bytes(b"\x00\x01binaire pour un autre processeur")
-    bad.chmod(0o755)
-    with pytest.raises(FFmpegError) as err:
+def test_programme_qui_ne_se_lance_pas(isolated, tmp_path, monkeypatch):
+    """Mauvais processeur, fichier abîmé : on le signale (bandeau + Réparer) et on passe au suivant."""
+    for name in ("ffmpeg", "ffprobe"):
+        bad = isolated / "bin" / name
+        bad.write_bytes(b"\x00\x01binaire pour un autre processeur")
+        bad.chmod(0o755)
+    status = ffmpeg_status()
+    assert status["ok"] is False and "ne se lance pas" in status["error"] and is_missing_error(status["error"])
+    with pytest.raises(FFmpegUnavailable) as err:
         probe(tmp_path / "x.mp4")
-    assert "Impossible de lancer" in str(err.value)
-    (isolated / "bin" / "ffmpeg").write_bytes(b"\x00\x01")
-    (isolated / "bin" / "ffmpeg").chmod(0o755)
-    with pytest.raises(FFmpegError, match="Impossible de lancer"):
+    assert "ne se lance pas" in str(err.value) and str(isolated / "bin" / "ffprobe") in str(err.value)
+    with pytest.raises(FFmpegUnavailable):
         run_ffmpeg(["-version"])
-    with pytest.raises(FFmpegError, match="Impossible de lancer"):
-        run_ffmpeg(["-version"], duration=1.0, on_progress=lambda f: None)
+    # Un ffmpeg qui marche plus loin (Homebrew) est utilisé à la place du binaire cassé
+    for name in ("ffmpeg", "ffprobe"):
+        os.symlink(REAL[name], fake_tool(tmp_path / "homebrew" / "x").parent / name)
+    assert binary("ffmpeg") == str(tmp_path / "homebrew" / "ffmpeg") and ffmpeg_status()["ok"] is True
+
+
+def test_programme_qui_cesse_de_se_lancer(isolated, monkeypatch):
+    """Vérifié au premier appel, abîmé ensuite : erreur claire, reconnue pour la reprise automatique."""
+    for name in ("ffmpeg", "ffprobe"):
+        (isolated / "bin" / name).write_bytes(b"\x00\x01")
+        (isolated / "bin" / name).chmod(0o755)
+    monkeypatch.setattr(ffmpeg_utils, "launch_problem", lambda path: "")
+    for call in (lambda: run_ffmpeg(["-version"]), lambda: run_ffmpeg(["-version"], duration=1.0, on_progress=lambda f: None)):
+        with pytest.raises(FFmpegUnavailable) as err:
+            call()
+        assert is_missing_error(str(err.value)) and "ne se lance pas" in str(err.value)
+
+
+def test_dossier_du_path_illisible(isolated, tmp_path, monkeypatch):
+    """Un dossier du PATH qu'on n'a pas le droit de lire est sauté (pas de plantage de /api/config)."""
+    forbidden = tmp_path / "interdit"
+    real_stat = os.stat
+
+    def stat(path, *args, **kwargs):
+        if str(path).startswith(str(forbidden)):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", stat)
+    later = tmp_path / "plus-loin"
+    later.mkdir()
+    for name in ("ffmpeg", "ffprobe"):
+        os.symlink(REAL[name], later / name)
+    monkeypatch.setenv("PATH", f"{forbidden}{os.pathsep}{later}")
+    assert binary("ffmpeg") == str(later / "ffmpeg") and ffmpeg_status()["ok"] is True
+
+
+def test_windows_cherche_aussi_le_dossier_de_krokcut(isolated, monkeypatch):
+    dirs = ffmpeg_utils.search_dirs(windows=True)
+    assert isolated in dirs and Path.cwd() in dirs
+    assert dirs.index(isolated / "bin") < dirs.index(isolated)
+
+
+def test_scan_sans_ffprobe_ne_vide_pas_la_bibliotheque(workspace, library_dir, monkeypatch, tmp_path):
+    from krokcut import server
+    from krokcut.library import Library
+
+    lib = Library.scan(library_dir)
+    asset = lib.assets[0]
+    Library.load(library_dir).update(asset["id"], {"tags": ["perso"], "description": "mon boing"})
+    monkeypatch.setattr(ffmpeg_utils, "search_dirs", lambda: [tmp_path / "vide"])
+    with pytest.raises(FFmpegUnavailable):
+        Library.scan(library_dir)
+    kept = {a["id"]: a for a in Library.load(library_dir).assets}
+    assert len(kept) == len(lib.assets) and kept[asset["id"]]["description"] == "mon boing"
+    res = TestClient(server.app).post("/api/library/scan", json={"dir": str(library_dir)})
+    assert res.status_code == 503 and is_missing_error(res.json()["detail"])
+    assert len(Library.load(library_dir).assets) == len(lib.assets)
 
 
 def test_anciens_messages_reconnus():
@@ -152,8 +211,35 @@ def test_reparation_ratee_ne_touche_a_rien(tmp_path):
 def test_sources_selon_le_processeur():
     arm = ffmpeg_install.sources("ffmpeg", "arm64")
     intel = ffmpeg_install.sources("ffprobe", "x86_64")
-    assert arm == ["https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip"]
+    assert arm[0] == "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip"
+    assert "evermeet" in arm[1]  # version Intel en secours (Rosetta), refusée par works() si elle ne tourne pas
     assert intel[0].endswith("/macos/amd64/release/ffprobe.zip") and "evermeet" in intel[1]
+
+
+def test_reparation_coupee_puis_reprise(tmp_path, monkeypatch):
+    """Coupure en plein téléchargement (IncompleteRead) : la source de secours prend le relais ;
+    les restes d'une réparation interrompue par « Quitter » sont nettoyés."""
+    import http.client
+
+    bin_dir = tmp_path / "bin"
+    stale = bin_dir / ".ffmpeg-abc123"
+    stale.mkdir(parents=True)
+    (stale / "ffmpeg.zip").write_bytes(b"x" * 1000)
+    real_download = ffmpeg_install._download
+
+    def flaky(url, dest, on_progress=None):
+        if url.startswith("https://exemple.invalid/"):
+            raise http.client.IncompleteRead(b"")
+        return real_download(url, dest, on_progress)
+
+    monkeypatch.setattr(ffmpeg_install, "_download", flaky)
+    urls = {p: ["https://exemple.invalid/coupe.zip", zip_of(tmp_path, p, GOOD[p])] for p in ffmpeg_install.PROGRAMS}
+    ffmpeg_install.install(bin_dir, urls=urls)
+    assert ffmpeg_install.works(bin_dir)
+    assert not list(bin_dir.glob(".ffmpeg-*"))
+    (bin_dir / ".ffmpeg-telechargement").mkdir()
+    ffmpeg_install.clean_repair_leftovers(bin_dir)
+    assert not list(bin_dir.glob(".ffmpeg-*"))
 
 
 # ------------------------------------------------------------------ serveur

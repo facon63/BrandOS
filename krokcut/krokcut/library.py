@@ -14,7 +14,7 @@ import subprocess
 import unicodedata
 from pathlib import Path
 
-from .ffmpeg_utils import FFmpegError, binary, probe
+from .ffmpeg_utils import FFmpegError, FFmpegUnavailable, binary, probe
 
 LIBRARY_FILE = "krokcut_library.json"
 
@@ -151,6 +151,8 @@ class Library:
         root = Path(root).expanduser().resolve()
         if not root.is_dir():
             raise FileNotFoundError(f"Dossier bibliothèque introuvable : {root}")
+        binary("ffprobe")  # absent ou cassé : on s'arrête ici, sinon chaque fichier serait sauté et la
+        # bibliothèque enregistrée vide (tags et descriptions perdus)
         previous = {a["path"]: a for a in cls.load(root).assets}
         files = [
             p
@@ -167,6 +169,8 @@ class Library:
             old = previous.get(rel_str)
             try:
                 info = probe(path)
+            except FFmpegUnavailable:
+                raise
             except FFmpegError:
                 continue
             kind = old["kind"] if old and old.get("edited") else guess_kind(rel, path.suffix.lower(), info)

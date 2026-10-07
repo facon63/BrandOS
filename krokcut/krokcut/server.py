@@ -20,8 +20,8 @@ from .audio import Levels
 from .config import AppConfig, StyleProfile, channel_bible, workspace_dir
 from .cutting import moment_pieces, pieces_duration
 from .derush import sequence_duration
-from .ffmpeg_install import Repair, repair_supported
-from .ffmpeg_utils import extract_frame, ffmpeg_status, is_missing_error
+from .ffmpeg_install import Repair, clean_repair_leftovers, repair_supported
+from .ffmpeg_utils import FFmpegUnavailable, extract_frame, ffmpeg_status, is_missing_error
 from .jobs import JobManager
 from .library import Library
 from .llm import claude_available
@@ -50,6 +50,7 @@ async def lifespan(_app: FastAPI):
     for ref in store.list():
         ref.recover_interrupted()
     try:
+        clean_repair_leftovers()  # réparation coupée par « Quitter » ou une mise à jour
         resume_missing_ffmpeg()  # ffmpeg réinstallé depuis : les vidéos bloquées repartent toutes seules
     except Exception:
         pass
@@ -532,10 +533,13 @@ def scan_library(data: dict):
     directory = (data.get("dir") or cfg.library_dir).strip()
     if not directory:
         raise HTTPException(400, "Indique le dossier de la bibliothèque.")
+    require_ffmpeg()
     try:
         lib = Library.scan(directory)
     except FileNotFoundError as exc:
         raise HTTPException(400, str(exc)) from exc
+    except FFmpegUnavailable as exc:  # bibliothèque laissée intacte
+        raise HTTPException(503, str(exc)) from exc
     cfg.library_dir = directory
     cfg.save()
     return {"dir": directory, "assets": lib.assets, "stats": lib.stats()}
