@@ -72,6 +72,27 @@ jobs:
           curl -fs $URL/api/references >/dev/null
           echo "Mise à jour OK"
 
+      - name: ffmpeg manquant (bouton « Réparer ffmpeg », vrai téléchargement)
+        run: |
+          URL=http://127.0.0.1:8765
+          # App lancée depuis le Finder (PATH minimal, sans variable) : ffmpeg trouvé dans ~/KrokCut/bin
+          (cd ~/KrokCut && env -i HOME="$HOME" PATH=/usr/bin:/bin .venv/bin/python -c \
+            "import os; from krokcut.ffmpeg_utils import binary; p = binary('ffmpeg'); print(p); assert p.startswith(os.path.expanduser('~/KrokCut/bin'))")
+          # Le cas signalé : ffprobe présent mais ffmpeg disparu de ~/KrokCut/bin
+          rm ~/KrokCut/bin/ffmpeg
+          if ! command -v ffmpeg >/dev/null && [ ! -x /opt/homebrew/bin/ffmpeg ] && [ ! -x /usr/local/bin/ffmpeg ]; then
+            curl -fs $URL/api/config | grep '"ok":false'
+            code=$(curl -s -o /dev/null -w "%{http_code}" -X PUT --data-binary "x" "$URL/api/upload/wankil.mp4?folder=references")
+            [ "$code" = 503 ] || { echo "Envoi accepté sans ffmpeg ($code)"; exit 1; }
+          else
+            echo "(un autre ffmpeg est installé sur ce Mac : KrokCut l'utilise en attendant)"
+          fi
+          curl -fs -X POST $URL/api/ffmpeg/repair
+          for i in $(seq 1 180); do curl -fs $URL/api/config | grep -q '"running":false' && break; sleep 1; done
+          curl -fs $URL/api/config | python3 -c "import json, sys; f = json.load(sys.stdin)['ffmpeg']; print(f); assert f['ok'] and not f['repair']['error'] and '/KrokCut/bin/' in f['ffmpeg']"
+          ~/KrokCut/bin/ffmpeg -hide_banner -encoders | grep libx264
+          echo "Réparation OK"
+
       - name: Tests (rendu ffmpeg réel)
         run: |
           ~/KrokCut/bin/uv pip install --python ~/KrokCut/.venv/bin/python pytest jsonschema httpx

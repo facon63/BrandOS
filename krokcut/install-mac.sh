@@ -94,38 +94,46 @@ ffmpeg_ok() {
   # (pas de grep -q : avec pipefail il couperait la sortie de ffmpeg et ferait échouer le test)
   "$1/ffmpeg" -hide_banner -encoders 2>/dev/null | grep libx264 >/dev/null && "$1/ffprobe" -version >/dev/null 2>&1
 }
-fetch_zip() {  # fetch_zip <url> <programme>
+fetch_zip() {  # fetch_zip <url> <programme> <dossier> : télécharge et extrait un programme
   rm -rf "$TMP/$2" "$TMP/$2.zip"
-  curl -fsSL "$1" -o "$TMP/$2.zip" || return 1
+  curl -fsSL --retry 2 "$1" -o "$TMP/$2.zip" || return 1
   mkdir -p "$TMP/$2" && unzip -oq "$TMP/$2.zip" -d "$TMP/$2" || return 1
   local found
-  found="$(find "$TMP/$2" -type f -name "$2" | head -1)"
+  found="$(find "$TMP/$2" -type f -name "$2" ! -path "*__MACOSX*" | head -1)"
   [ -n "$found" ] || return 1
-  cp "$found" "$DEST/bin/$2" && chmod +x "$DEST/bin/$2"
+  cp "$found" "$3/$2" && chmod +x "$3/$2"
 }
+# ffmpeg et ffprobe sont toujours installés ensemble, et seulement une fois les deux téléchargés et
+# vérifiés : une coupure réseau ne laisse jamais l'un sans l'autre (KrokCut ne pourrait plus lire de son).
 if ffmpeg_ok "$DEST/bin"; then
   echo "ffmpeg déjà présent."
-elif [ -z "${KROKCUT_FORCE_FFMPEG_DOWNLOAD:-}" ] && command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null \
-     && ffmpeg_ok "$(dirname "$(command -v ffmpeg)")"; then
-  ln -sf "$(command -v ffmpeg)" "$DEST/bin/ffmpeg"
-  ln -sf "$(command -v ffprobe)" "$DEST/bin/ffprobe"
-  echo "ffmpeg du système utilisé."
-elif [ "$OS" = "Darwin" ]; then
-  rm -f "$DEST/bin/ffmpeg" "$DEST/bin/ffprobe"
-  MR_ARCH="arm64"
-  [ "$ARCH" = "x86_64" ] && MR_ARCH="amd64"
-  for prog in ffmpeg ffprobe; do
-    fetch_zip "https://ffmpeg.martin-riedl.de/redirect/latest/macos/$MR_ARCH/release/$prog.zip" "$prog" \
-      || { [ "$prog" = ffmpeg ] && fetch_zip "https://evermeet.cx/ffmpeg/getrelease/zip" ffmpeg; } \
-      || { [ "$prog" = ffprobe ] && fetch_zip "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip" ffprobe; } \
-      || true
-  done
-  if ! ffmpeg_ok "$DEST/bin" && command -v brew >/dev/null; then
+else
+  NEW="$TMP/ffmpeg-neuf"
+  mkdir -p "$NEW"
+  if [ "$OS" = "Darwin" ]; then
+    MR_ARCH="arm64"
+    [ "$ARCH" = "x86_64" ] && MR_ARCH="amd64"
+    for prog in ffmpeg ffprobe; do
+      fetch_zip "https://ffmpeg.martin-riedl.de/redirect/latest/macos/$MR_ARCH/release/$prog.zip" "$prog" "$NEW" \
+        || { [ "$ARCH" = "x86_64" ] && [ "$prog" = ffmpeg ] && fetch_zip "https://evermeet.cx/ffmpeg/getrelease/zip" ffmpeg "$NEW"; } \
+        || { [ "$ARCH" = "x86_64" ] && [ "$prog" = ffprobe ] && fetch_zip "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip" ffprobe "$NEW"; } \
+        || true
+    done
+  fi
+  if ffmpeg_ok "$NEW"; then
+    mv -f "$NEW/ffmpeg" "$DEST/bin/ffmpeg" && mv -f "$NEW/ffprobe" "$DEST/bin/ffprobe"
+    echo "ffmpeg installé dans $DEST/bin."
+  elif [ -z "${KROKCUT_FORCE_FFMPEG_DOWNLOAD:-}" ] && command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null \
+       && ffmpeg_ok "$(dirname "$(command -v ffmpeg)")"; then
+    ln -sf "$(command -v ffmpeg)" "$DEST/bin/ffmpeg"
+    ln -sf "$(command -v ffprobe)" "$DEST/bin/ffprobe"
+    echo "ffmpeg du système utilisé."
+  elif [ "$OS" = "Darwin" ] && command -v brew >/dev/null; then
     echo "Téléchargement direct impossible, installation via Homebrew…"
     brew install ffmpeg && ln -sf "$(brew --prefix)/bin/ffmpeg" "$DEST/bin/ffmpeg" && ln -sf "$(brew --prefix)/bin/ffprobe" "$DEST/bin/ffprobe"
   fi
 fi
-ffmpeg_ok "$DEST/bin" || fail "ffmpeg n'a pas pu être installé. Installe Homebrew (https://brew.sh) puis relance cette commande."
+ffmpeg_ok "$DEST/bin" || fail "ffmpeg n'a pas pu être installé (connexion internet ?). Relance cette commande ; si ça recommence, installe Homebrew (https://brew.sh) puis relance-la."
 "$DEST/bin/ffmpeg" -version 2>/dev/null | sed -n 1p
 
 # ----------------------------------------------------------- 4. l'app KrokCut

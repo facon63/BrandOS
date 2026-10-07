@@ -9,8 +9,8 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
+import sys
 from dataclasses import asdict, dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -18,25 +18,100 @@ from typing import Callable, Sequence
 
 ProgressCallback = Callable[[float], None]
 
+APP_DIR = Path(__file__).resolve().parent.parent  # ~/KrokCut : l'installeur Mac y range ffmpeg dans bin/
+# Emplacements habituels (Homebrew Apple Silicon / Intel, MacPorts) : l'app lancée depuis le Finder
+# hérite d'un PATH minimal qui ne les contient pas.
+EXTRA_DIRS = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"]
+MISSING_MARK = "' est introuvable"  # repère stable : « 'ffmpeg' est introuvable … »
+
 
 class FFmpegError(RuntimeError):
     pass
 
 
-def binary(name: str) -> str:
-    """Chemin de ffmpeg/ffprobe (variable KROKCUT_FFMPEG_DIR possible)."""
-    custom_dir = os.environ.get("KROKCUT_FFMPEG_DIR")
-    if custom_dir:
-        candidate = Path(custom_dir) / (name + (".exe" if os.name == "nt" else ""))
-        if candidate.exists():
-            return str(candidate)
-    found = shutil.which(name)
-    if not found:
-        raise FFmpegError(
-            f"'{name}' est introuvable. Installe ffmpeg (https://ffmpeg.org/download.html) "
-            "et ajoute-le au PATH, ou définis KROKCUT_FFMPEG_DIR."
+def search_dirs() -> list[Path]:
+    """Dossiers où chercher ffmpeg/ffprobe, du plus spécifique au plus général."""
+    dirs: list[Path] = []
+    custom = os.environ.get("KROKCUT_FFMPEG_DIR")
+    if custom:
+        dirs.append(Path(custom).expanduser())
+    dirs.append(APP_DIR / "bin")
+    if os.name == "nt":
+        dirs.append(APP_DIR / "ffmpeg" / "bin")
+    dirs += [Path(d) for d in os.environ.get("PATH", "").split(os.pathsep) if d]
+    if os.name != "nt":
+        dirs += [Path(d) for d in EXTRA_DIRS]
+    unique: list[Path] = []
+    for d in dirs:
+        if d not in unique:
+            unique.append(d)
+    return unique
+
+
+def _usable(path: Path) -> bool:
+    # is_file() suit les liens : un lien cassé (ffmpeg de Homebrew désinstallé…) est ignoré
+    return path.is_file() and os.access(path, os.X_OK)
+
+
+def find_binary(name: str) -> str | None:
+    exe = name + (".exe" if os.name == "nt" else "")
+    for d in search_dirs():
+        if _usable(d / exe):
+            return str(d / exe)
+    return None
+
+
+def missing_message(name: str) -> str:
+    if sys.platform == "darwin":
+        fix = (
+            "Clique sur « Réparer ffmpeg » en haut de la page de KrokCut, ou relance la commande "
+            "d'installation de KrokCut dans le Terminal : elle réinstalle ffmpeg dans ~/KrokCut/bin."
         )
+    elif os.name == "nt":
+        fix = "Relance installer.bat (il installe ffmpeg), puis rouvre KrokCut."
+    else:
+        fix = "Installe ffmpeg (sudo apt install ffmpeg) ou définis KROKCUT_FFMPEG_DIR."
+    return f"'{name}{MISSING_MARK} : KrokCut ne peut pas lire les vidéos sans lui. {fix}"
+
+
+def is_missing_error(text: str) -> bool:
+    """Erreur enregistrée parce que ffmpeg ou ffprobe manquait (ancien et nouveau message)."""
+    return any(f"'{name}{MISSING_MARK}" in (text or "") for name in ("ffmpeg", "ffprobe"))
+
+
+def binary(name: str) -> str:
+    """Chemin de ffmpeg/ffprobe : KROKCUT_FFMPEG_DIR, ~/KrokCut/bin, le PATH, puis Homebrew."""
+    found = find_binary(name)
+    if not found:
+        raise FFmpegError(missing_message(name))
     return found
+
+
+def ffmpeg_status() -> dict:
+    """État affiché par l'interface (bandeau « ffmpeg introuvable » + bouton Réparer)."""
+    paths = {name: find_binary(name) for name in ("ffmpeg", "ffprobe")}
+    missing = [name for name, path in paths.items() if not path]
+    return {
+        "ok": not missing,
+        "ffmpeg": paths["ffmpeg"] or "",
+        "ffprobe": paths["ffprobe"] or "",
+        "error": missing_message(missing[0]) if missing else "",
+    }
+
+
+def _launch(cmd: Sequence[str], **kwargs):
+    """subprocess.run, avec une erreur claire si le programme existe mais ne se lance pas."""
+    try:
+        return subprocess.run(cmd, **kwargs)
+    except OSError as exc:  # mauvais processeur, fichier abîmé, droits…
+        raise FFmpegError(_launch_error(cmd[0], exc)) from exc
+
+
+def _launch_error(program: str, exc: OSError) -> str:
+    return (
+        f"Impossible de lancer {program} ({exc.strerror or exc}). "
+        + (missing_message(Path(program).stem).split(" : ", 1)[1] if sys.platform == "darwin" else "Réinstalle ffmpeg.")
+    )
 
 
 def run_ffmpeg(
@@ -53,19 +128,22 @@ def run_ffmpeg(
     cmd += [str(a) for a in args]
 
     if not (on_progress and duration):
-        proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace", cwd=cwd)
+        proc = _launch(cmd, capture_output=True, text=True, errors="replace", cwd=cwd)
         if proc.returncode != 0:
             raise FFmpegError(_format_error(cmd, proc.stderr))
         return
 
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        errors="replace",
-        cwd=cwd,
-    )
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            cwd=cwd,
+        )
+    except OSError as exc:
+        raise FFmpegError(_launch_error(cmd[0], exc)) from exc
     assert proc.stdout is not None
     try:
         for line in proc.stdout:
@@ -90,7 +168,7 @@ _VERSION: int | None = None
 def ffmpeg_major_version() -> int:
     global _VERSION
     if _VERSION is None:
-        proc = subprocess.run([binary("ffmpeg"), "-version"], capture_output=True, text=True, errors="replace")
+        proc = _launch([binary("ffmpeg"), "-version"], capture_output=True, text=True, errors="replace")
         match = re.search(r"ffmpeg version n?(\d+)", proc.stdout)
         _VERSION = int(match.group(1)) if match else 6
     return _VERSION
@@ -145,7 +223,7 @@ def probe(path: str | Path) -> MediaInfo:
         "-show_streams",
         str(path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+    proc = _launch(cmd, capture_output=True, text=True, errors="replace")
     if proc.returncode != 0:
         raise FFmpegError(f"Impossible de lire {path} :\n{proc.stderr.strip()}")
     data = json.loads(proc.stdout or "{}")

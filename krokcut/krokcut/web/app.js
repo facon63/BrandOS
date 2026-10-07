@@ -52,6 +52,53 @@ function toast(msg, isError = false) {
   toast.timer = setTimeout(() => el.classList.add("hidden"), 6000);
 }
 
+/* ------------------------------------------------------------------ ffmpeg */
+// Sans ffmpeg, KrokCut ne peut ni lire ni monter une vidéo : on le dit en haut de la page, avec un
+// bouton qui le réinstalle (Mac), et on refuse les envois avant de copier des Go pour rien.
+let ffmpegState = { ok: true };
+async function checkFfmpeg() {
+  try {
+    ffmpegState = (await api("/api/config")).ffmpeg || { ok: true };
+  } catch (_) { return ffmpegState.ok; }
+  renderFfmpeg();
+  if (ffmpegState.repair && ffmpegState.repair.running) setTimeout(checkFfmpeg, 2000);
+  return ffmpegState.ok;
+}
+function renderFfmpeg() {
+  const el = $("#ffmpeg-banner");
+  const st = ffmpegState;
+  if (st.ok) {
+    if (!el.classList.contains("hidden") && renderFfmpeg.repairing) {
+      toast("ffmpeg est réparé ✅ Les vidéos de « Mes vidéos » en erreur reprennent toutes seules ; pour un épisode en erreur, clique sur « Continuer ».");
+    }
+    renderFfmpeg.repairing = false;
+    el.classList.add("hidden");
+    return;
+  }
+  const repair = st.repair || {};
+  renderFfmpeg.repairing = renderFfmpeg.repairing || repair.running;
+  let action = "";
+  if (repair.running) action = `<strong>Téléchargement de ffmpeg… ${Math.round((repair.progress || 0) * 100)} %</strong>`;
+  else if (repair.supported) action = `<button id="ffmpeg-repair" class="primary small">Réparer ffmpeg</button>`;
+  el.innerHTML = `⚠️ ${esc(st.error)} ${action}${repair.error ? `<br>❌ La réparation a échoué : ${esc(repair.error)}` : ""}`;
+  el.classList.remove("hidden");
+  const btn = $("#ffmpeg-repair");
+  if (btn) btn.addEventListener("click", async () => {
+    try {
+      ffmpegState.repair = await api("/api/ffmpeg/repair", { method: "POST" });
+      renderFfmpeg.repairing = true;
+      renderFfmpeg();
+      setTimeout(checkFfmpeg, 1000);
+    } catch (err) { toast(err.message, true); }
+  });
+}
+/** À appeler avant d'envoyer ou de lancer quoi que ce soit qui lit une vidéo. */
+async function ensureFfmpeg() {
+  if (await checkFfmpeg()) return true;
+  toast("ffmpeg est introuvable : répare-le avec le bouton en haut de la page avant d'importer une vidéo.", true);
+  return false;
+}
+
 /* ------------------------------------------------------------------ onglets */
 $("#btn-quit").addEventListener("click", async () => {
   // État réel du serveur (pas celui du dernier onglet ouvert)
@@ -149,8 +196,10 @@ function putFile(file, folder, onProgress) {
     xhr.open("PUT", `/api/upload/${encodeURIComponent(file.name)}?folder=${folder}`);
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
     xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) resolve(JSON.parse(xhr.responseText).path);
-      else reject(new Error(xhr.responseText));
+      if (xhr.status >= 200 && xhr.status < 300) return resolve(JSON.parse(xhr.responseText).path);
+      let detail = xhr.responseText || xhr.statusText;
+      try { detail = JSON.parse(xhr.responseText).detail || detail; } catch (_) { /* pas de JSON */ }
+      reject(new Error(detail));
     };
     xhr.onerror = () => reject(new Error("Échec de l'envoi"));
     xhr.send(file);
@@ -172,7 +221,9 @@ $$(".dropzone[data-pov]").forEach((zone) => {
   zone.addEventListener("drop", async (e) => {
     e.preventDefault();
     zone.classList.remove("over");
-    for (const file of e.dataTransfer.files) {
+    const files = [...e.dataTransfer.files];
+    if (!(await ensureFfmpeg())) return;
+    for (const file of files) {
       try { await uploadFile(file, zone.dataset.pov); } catch (err) { toast(`Envoi impossible : ${err.message}`, true); }
     }
   });
@@ -651,6 +702,7 @@ async function checkReferences() {
 }
 
 checkVersion();
+checkFfmpeg();
 checkClaude();
 checkReferences();
 loadProjects();
@@ -868,6 +920,7 @@ async function loadRefDetails(id, sig) {
 
 async function addReferencePaths(paths) {
   if (!paths.length) return;
+  if (!(await ensureFfmpeg())) return;
   try {
     const res = await api("/api/references", { method: "POST", body: { paths } });
     const fresh = res.added.length - res.duplicates.length;
@@ -895,7 +948,9 @@ refDrop.addEventListener("dragleave", () => refDrop.classList.remove("over"));
 refDrop.addEventListener("drop", async (e) => {
   e.preventDefault();
   refDrop.classList.remove("over");
-  for (const file of e.dataTransfer.files) {
+  const files = [...e.dataTransfer.files];
+  if (!(await ensureFfmpeg())) return;
+  for (const file of files) {
     const entry = { name: file.name, progress: 0 };
     state.refUploads.push(entry);
     renderRefUploads();

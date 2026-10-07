@@ -20,7 +20,8 @@ from .audio import Levels
 from .config import AppConfig, StyleProfile, channel_bible, workspace_dir
 from .cutting import moment_pieces, pieces_duration
 from .derush import sequence_duration
-from .ffmpeg_utils import extract_frame
+from .ffmpeg_install import Repair, repair_supported
+from .ffmpeg_utils import extract_frame, ffmpeg_status, is_missing_error
 from .jobs import JobManager
 from .library import Library
 from .llm import claude_available
@@ -49,6 +50,10 @@ async def lifespan(_app: FastAPI):
     for ref in store.list():
         ref.recover_interrupted()
     try:
+        resume_missing_ffmpeg()  # ffmpeg réinstallé depuis : les vidéos bloquées repartent toutes seules
+    except Exception:
+        pass
+    try:
         refresh_suggestions(store)  # guide d'une version précédente : réglages suggérés recalculés
         for doc in remeasure_outdated_sfx(store):  # bruitages mesurés par l'ancienne détection
             if not jobs.busy(doc.id, "reference"):
@@ -62,6 +67,29 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="KrokCut", version=__version__, lifespan=lifespan)
 jobs = JobManager()
+
+
+def resume_missing_ffmpeg() -> int:
+    """Relance les analyses de « Mes vidéos » arrêtées parce que ffmpeg manquait, s'il est là maintenant."""
+    if not ffmpeg_status()["ok"]:
+        return 0
+    resumed = 0
+    for doc in ReferenceStore().list():
+        failed = any(st.status == "error" for st in doc.state.steps.values())
+        if failed and is_missing_error(doc.state.last_error) and not jobs.busy(doc.id, "reference"):
+            jobs.submit(doc.id, kind="reference")
+            resumed += 1
+    return resumed
+
+
+ffmpeg_repair = Repair(on_done=resume_missing_ffmpeg)
+
+
+def require_ffmpeg() -> None:
+    """Refuse tout de suite (avant de copier des Go de vidéo) si ffmpeg manque."""
+    status = ffmpeg_status()
+    if not status["ok"]:
+        raise HTTPException(503, status["error"])
 app.mount("/static", StaticFiles(directory=WEB), name="static")
 
 
@@ -189,7 +217,17 @@ def get_config():
         "video_codec": cfg.render.video_codec,
         "font_file": cfg.render.font_file,
         "workspace": str(workspace_dir()),
+        "ffmpeg": {**ffmpeg_status(), "repair": ffmpeg_repair.state()},
     }
+
+
+@app.post("/api/ffmpeg/repair")
+def repair_ffmpeg():
+    """Bouton « Réparer ffmpeg » : retélécharge ffmpeg dans ~/KrokCut/bin (Mac)."""
+    if not repair_supported():
+        raise HTTPException(400, "La réparation automatique n'existe que sur Mac : relance l'installation de KrokCut.")
+    ffmpeg_repair.start()
+    return ffmpeg_repair.state()
 
 
 @app.post("/api/config")
@@ -267,6 +305,7 @@ async def upload(filename: str, request: Request, folder: str = "rush"):
     safe = Path(filename).name
     if not safe or safe.startswith("."):
         raise HTTPException(400, "Nom de fichier invalide")
+    require_ffmpeg()
     if folder == "references":
         dest_dir = ReferenceStore().files_dir
     else:
@@ -317,6 +356,8 @@ def list_projects():
 def create_project(data: NewProject):
     if not data.pov_a or not data.pov_b:
         raise HTTPException(400, "Il faut les deux POV.")
+    if data.start:
+        require_ffmpeg()
     for f in data.pov_a + data.pov_b:
         if not Path(f).exists():
             raise HTTPException(400, f"Fichier introuvable : {f}")
@@ -351,6 +392,7 @@ def run_project(project_id: str, req: RunRequest):
     p = _project(project_id)
     if jobs.busy(project_id):
         raise HTTPException(409, "Ce projet est déjà en cours de traitement.")
+    require_ffmpeg()
     if req.quality in ("preview", "final"):
         p.state.render_quality = req.quality  # type: ignore[assignment]
     if req.manual_offset is not None:
@@ -560,6 +602,7 @@ def add_references(data: AddReferences):
     for path in data.paths:
         if not Path(path).is_file():
             raise HTTPException(400, f"Fichier introuvable : {path}")
+    require_ffmpeg()
     for path in data.paths:
         doc, created = store.add_or_get(path)
         if not created:
@@ -597,6 +640,7 @@ def rerun_reference(ref_id: str, data: dict | None = None):
         raise HTTPException(400, "Étape inconnue")
     if jobs.busy(doc.id, "reference"):
         raise HTTPException(409, "Déjà en cours de traitement.")
+    require_ffmpeg()
     if not from_step and all(st.status == "done" for st in doc.state.steps.values()):
         doc.invalidate(["sfx", "analyze"])
     try:

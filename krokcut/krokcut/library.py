@@ -98,7 +98,7 @@ def detect_green_screen(path: Path) -> bool:
             capture_output=True,
             timeout=30,
         )
-    except (FFmpegError, subprocess.TimeoutExpired):
+    except (FFmpegError, OSError, subprocess.TimeoutExpired):
         return False
     raw = proc.stdout
     if len(raw) < 32 * 18 * 3:

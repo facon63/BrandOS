@@ -53,6 +53,7 @@ Chaque étape est mise en cache : si le PC s'éteint pendant la transcription, �
 - **Désinstaller** : supprime le dossier `KrokCut` de ton dossier personnel et l'app KrokCut.
 - Si macOS demande l'autorisation d'accéder à un dossier (Téléchargements, disque externe…), clique sur **Autoriser** : c'est pour lire les rush.
 - Pendant un traitement, KrokCut empêche le Mac de se mettre en veille (l'écran peut s'éteindre, ça continue).
+- **« ffmpeg est introuvable »** (bandeau rouge en haut de l'interface) : clique sur **Réparer ffmpeg**. KrokCut le retélécharge dans `~/KrokCut/bin`, puis les vidéos de « Mes vidéos » restées en erreur reprennent toutes seules (pour un épisode, clique sur **Continuer**). Tant que ffmpeg manque, KrokCut refuse les imports au lieu de copier des Go de vidéo pour rien.
 
 Sur Mac, la transcription tourne sur le processeur (Whisper n'utilise pas la puce graphique d'Apple) : choisis le modèle **medium** ou **small** dans Réglages si c'est trop long. Sur Mac Apple Silicon (M1 à M4…), l'encodeur **« H.264 Mac »** accélère le rendu final.
 
