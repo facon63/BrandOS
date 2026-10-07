@@ -24,7 +24,11 @@ class StepStatus(BaseModel):
 
 
 class Cancelled(Exception):
-    pass
+    """Arrêt demandé (ou mise en attente) : l'étape repasse « en attente » avec ce message."""
+
+
+class Skipped(Exception):
+    """L'étape n'a pas lieu d'être (pas de clé Claude…) : marquée « sautée » avec ce message."""
 
 
 class StepTarget(Protocol):
@@ -171,10 +175,15 @@ class StepRunner:
                 message = getattr(self, f"step_{step}")() or ""
                 if self.cancel.is_set():  # annulé pendant une étape sans point d'arrêt (appel à Claude…)
                     raise Cancelled()
-            except Cancelled:
-                t.set_step(step, status="pending", message="Annulé")
-                t.log("■ annulé")
+            except Cancelled as exc:
+                message = str(exc) or "Annulé"
+                t.set_step(step, status="pending", message=message)
+                t.log(f"■ {message}")
                 return False
+            except Skipped as exc:
+                t.set_step(step, status="skipped", progress=1.0, message=str(exc))
+                t.log(f"⏭ {step} {exc}")
+                continue
             except Exception as exc:  # on remonte l'erreur dans l'interface
                 t.log(traceback.format_exc())
                 t.state.last_error = f"{step} : {exc}"

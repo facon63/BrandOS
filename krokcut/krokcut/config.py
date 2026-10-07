@@ -12,10 +12,11 @@ from pydantic import BaseModel, Field
 APP_DIR = Path(__file__).resolve().parent.parent
 
 
-def workspace_dir() -> Path:
+def workspace_dir(create: bool = True) -> Path:
     """Dossier de travail (projets, config). Modifiable via KROKCUT_HOME."""
     path = Path(os.environ.get("KROKCUT_HOME", APP_DIR / "workspace")).expanduser().resolve()
-    path.mkdir(parents=True, exist_ok=True)
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
     return path
 
 
