@@ -408,3 +408,14 @@ def place(x: np.ndarray, at: float, sig: np.ndarray, gain: float = 1.0) -> None:
     i = int(round(at * SR))
     m = min(len(sig), len(x) - i)
     x[i:i + m] += gain * sig[:m]
+
+
+# ------------------------------------------------------------- cache des tests
+_CACHE: dict = {}
+
+
+def cached(key, build):
+    """Un même média synthétique (ou une même analyse) sert à plusieurs fichiers de tests."""
+    if key not in _CACHE:
+        _CACHE[key] = build()
+    return _CACHE[key]

@@ -36,7 +36,8 @@ THUMB_DIR = "images4"
 THUMB_PATTERN = "f_%06d.jpg"
 THUMB_QUALITY = 4
 BLOCK = 300  # images par bloc (10 s) : point d'annulation et de progression
-HW_CODECS = ("h264", "hevc")  # décodage matériel (videotoolbox) seulement sous macOS pour ces codecs
+HWACCEL = "videotoolbox"  # décodage matériel, seulement sous macOS...
+HW_CODECS = ("h264", "hevc")  # ... et pour ces codecs
 DECODE_SHARE = 0.9  # part de la progression consacrée au décodage
 
 # ------------------------------------------------------------- descripteurs
@@ -712,7 +713,7 @@ def decode_args(src: Path, thumbs: Path, hwaccel: bool) -> list[str]:
         f"[b]fps={THUMB_FPS},scale={THUMB_W}:{THUMB_H}:force_original_aspect_ratio=decrease,"
         f"pad={THUMB_W}:{THUMB_H}:(ow-iw)/2:(oh-ih)/2,setsar=1[t]"
     )
-    args = ["-hwaccel", "videotoolbox"] if hwaccel else []
+    args = ["-hwaccel", HWACCEL] if hwaccel else []
     args += ["-i", str(src), "-an", "-sn", "-dn", "-filter_complex", graph,
              "-map", "[m]", "-f", "rawvideo", "pipe:1",
              "-map", "[t]", "-q:v", str(THUMB_QUALITY), "-start_number", "0", str(thumbs / THUMB_PATTERN)]
@@ -751,7 +752,7 @@ def analyze_image(src: Path, out_dir: Path, info: MediaInfo, *, progress: Progre
     out_dir.mkdir(parents=True, exist_ok=True)
     box = content_box(info.width, info.height)
     hw = use_hwaccel(info) if hwaccel is None else hwaccel
-    decode = "videotoolbox" if hw else "logiciel"
+    decode = HWACCEL if hw else "logiciel"
     luma_path = out_dir / "luma128.u8"
     try:
         try:
