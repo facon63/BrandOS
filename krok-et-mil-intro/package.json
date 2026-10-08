@@ -1,0 +1,24 @@
+{
+  "name": "krok-et-mil-intro",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Intro animée 10 s de la chaîne YouTube Krok et Mil (Remotion + audio procédural Python)",
+  "scripts": {
+    "studio": "remotion studio",
+    "poc": "bash scripts/poc.sh",
+    "trace": "python3 tools/trace_heads.py",
+    "check:heights": "python3 tools/check_heights.py",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.534",
+    "@remotion/fonts": "^4.0.534",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "remotion": "4.0.534"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.2",
+    "typescript": "5.9.3"
+  }
+}

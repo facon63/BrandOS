@@ -1,0 +1,9 @@
+variante                     hauteur(px)  écart vs Krok
+krok base       front         429
+mil  base       front         428      -0.23 %  OK
+krok wasteland  front         429
+mil  wasteland  front         428      -0.23 %  OK
+krok medieval   front         429
+mil  medieval   front         428      -0.23 %  OK
+krok medieval   back          428
+mil  medieval   back          431      +0.70 %  OK
