@@ -21,7 +21,6 @@ import shutil
 import statistics
 import threading
 import unicodedata
-from bisect import bisect_left
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -103,6 +102,7 @@ SPLIT_KINDS = ("tronque", "json", "refus")  # erreurs qui se règlent en coupant
 BUDGET_FACTOR = 1.5  # pause si la dépense dépasse 1,5 × le coût approuvé
 CONTEXT_S = 20.0  # transcription donnée en contexte avant chaque extrait
 MAX_SOUND_LINES = 120  # sons listés par extrait (les plus marquants) ; le reste est résumé
+CUT_TILE = (0.10, 0.35)  # case citée pour une coupe : la première du nouveau plan (à 0,35 s au plus)
 MAX_SHEETS_PER_CALL = 14
 MAX_REQUEST_B64 = 24 * 1024 * 1024  # au-delà, planches réencodées plus compressées
 SHRINK_JPEG_Q = 6
@@ -826,13 +826,46 @@ class VideoData:
     def plans_between(self, t0: float, t1: float) -> list[dict]:
         return [p for p in self.plans if p["end"] > t0 and p["start"] < t1]
 
+    def plan_at(self, t: float) -> str:
+        found = next((p for p in self.plans if p["start"] <= t < p["end"]), None)
+        return found["id"] if found else (self.plans[-1]["id"] if self.plans and t >= self.plans[-1]["end"] else "")
 
-def nearest_tile(tiles: list[dict], times: list[float], t: float) -> dict | None:
+
+def event_kind(e: dict) -> str:
+    """Type d'effet au sens de sheets.effect_instant : type de l'image, ou son / musique / silence."""
+    if e.get("type"):
+        return e["type"]
+    return {"S": "son", "M": "musique", "C": "silence"}.get((e.get("id") or "")[:1], "")
+
+
+def event_tile(data: VideoData, kind: str, t: float, dur: float = 0.0, *, plan: str | None = None,
+               tiles: list[dict] | None = None) -> dict | None:
+    """La case que les planches montrent pour un effet : même règle que le choix des cases
+    (sheets.effect_instant) — dans la fenêtre de l'effet et dans son plan ; sinon la plus proche.
+
+    Un type sans règle (une coupe) : la première case du nouveau plan.
+    """
+    tiles = data.tiles if tiles is None else tiles
     if not tiles:
         return None
-    i = bisect_left(times, t)
-    best = min((j for j in (i - 1, i) if 0 <= j < len(tiles)), key=lambda j: abs(times[j] - t))
-    return tiles[best]
+    found = _media("sheets").effect_instant(kind, t, dur) if kind else None
+    at, lo, hi = found if found else (float(t) + CUT_TILE[0], float(t), float(t) + CUT_TILE[1])
+    plan = plan or data.plan_at(at)
+    inside = [x for x in tiles if lo - 1e-6 <= x["t"] <= hi + 1e-6 and (not plan or x.get("plan") == plan)]
+    return min(inside or tiles, key=lambda x: (abs(x["t"] - at), x["t"]))
+
+
+def tile_box(planches: dict, cell: int | None) -> list[int] | None:
+    """[x, y, largeur, hauteur] d'une case (bandeau compris) dans sa planche, pour la découper à l'écran."""
+    try:
+        cols, w, h = int(planches["cols"]), int(planches["tile_w"]), int(planches["tile_h"])
+        band, gutter = int(planches["band_h"]), int(planches["gutter"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if cell is None or cell < 0:
+        return None
+    row, col = divmod(int(cell), cols)
+    return [col * (w + gutter), row * (band + h + gutter), w, band + h]
 
 
 # ------------------------------------------------------------ requêtes « observe »
@@ -938,11 +971,11 @@ def chunk_view(data: VideoData, chunk: dict) -> tuple[str, str, str, set[str], l
     """(contexte, mesures, chronologie, ids valides, cases) d'un extrait ou d'une moitié d'extrait."""
     t0, t1 = float(chunk["t0"]), float(chunk["t1"])
     tiles = data.sheet_tiles(list(chunk.get("sheets") or []))
-    times = [t["t"] for t in tiles]
     ids: set[str] = {t["id"] for t in tiles}
 
-    def tile_near(t: float) -> str:
-        found = nearest_tile(tiles, times, t)
+    def tile_of(kind: str, t: float, dur: float = 0.0, plan: str | None = None) -> str:
+        """La case qui montre l'effet (celle que le choix des cases lui a donnée), parmi celles de l'extrait."""
+        found = event_tile(data, kind, t, dur, plan=plan, tiles=tiles)
         return found["id"] if found else ""
 
     def inside(t) -> bool:
@@ -966,14 +999,14 @@ def chunk_view(data: VideoData, chunk: dict) -> tuple[str, str, str, set[str], l
     for e in data.image_events:
         if inside(e.get("t")):
             ids.add(e["id"])
-            rows.append((float(e["t"]), 2, _image_event_line(e, tile_near(float(e["t"]) + 0.1))))
+            rows.append((float(e["t"]), 2, _image_event_line(e, tile_of(e.get("type", ""), e["t"], e.get("dur") or 0.0, e.get("plan")))))
     # Sons marquants : les plus saillants d'abord, le reste résumé
     sounds = [e for e in data.sound_events if inside(e.get("t"))]
     sounds.sort(key=lambda e: (-(e.get("salience") or 0.0), e["t"]))
     listed, rest = sounds[:MAX_SOUND_LINES], sounds[MAX_SOUND_LINES:]
     for e in listed:
         ids.add(e["id"])
-        rows.append((float(e["t"]), 1, _sound_line(e, tile_near(float(e["t"]) + 0.15))))
+        rows.append((float(e["t"]), 1, _sound_line(e, tile_of("son", e["t"]))))
     # Musique : début, fin, changements ; « en cours » si elle a commencé avant l'extrait
     music_ids = []
     for m in data.music:
@@ -985,21 +1018,21 @@ def chunk_view(data: VideoData, chunk: dict) -> tuple[str, str, str, set[str], l
         if start < t0:
             rows.append((t0, 3, f"[{fmt_t(t0)}] {m['id']} musique en cours depuis {fmt_t(start)} ({_music_desc(m)})"))
         else:
-            rows.append((start, 3, f"[{fmt_t(start)}] {m['id']} début de musique ({_music_desc(m)}) · ≈{tile_near(start + 0.2)}"))
+            rows.append((start, 3, f"[{fmt_t(start)}] {m['id']} début de musique ({_music_desc(m)}) · ≈{tile_of('musique', start)}"))
         for ch in m.get("changes") or []:
             if inside(ch.get("t")):
                 why = MUSIC_CHANGE.get(ch.get("why", ""), ch.get("why", ""))
                 rows.append((float(ch["t"]), 3, f"[{fmt_t(ch['t'])}] {m['id']} changement dans la musique ({why})"))
         if inside(end):
             end_kind = MUSIC_END.get(m.get("end_kind", ""), "fin")
-            rows.append((end, 3, f"[{fmt_t(end)}] {m['id']} fin de musique ({end_kind}) · ≈{tile_near(end)}"))
+            rows.append((end, 3, f"[{fmt_t(end)}] {m['id']} fin de musique ({end_kind}) · ≈{tile_of('musique', end)}"))
     # Silences
     for c in data.silences:
         if inside(c.get("t")):
             ids.add(c["id"])
             text = f"[{fmt_t(c['t'])}] {c['id']} silence complet {fr(c.get('dur', 0), 2)} s"
             text += " (coupure nette)" if c.get("abrupt") else ""
-            rows.append((float(c["t"]), 4, text + f" · ≈{tile_near(float(c['t']) + 0.1)}"))
+            rows.append((float(c["t"]), 4, text + f" · ≈{tile_of('silence', c['t'])}"))
     for p in data.plans_between(t0, t1):
         ids.add(p["id"])
     rows.sort(key=lambda r: (r[0], r[1]))
@@ -2250,7 +2283,7 @@ def video_detail(doc: BenchDoc, busy: str | None, queue_note: str, settings: Ben
         "metrics": doc.state.metrics,
         "sheets": [{k: s.get(k) for k in ("n", "t0", "t1", "chunk", "w", "h", "first", "last")} for s in data.sheets],
         "tiles": [{k: t.get(k) for k in ("id", "t", "sheet", "cell", "plan")} for t in data.tiles],
-        "layout": {k: data.planches.get(k) for k in ("quality", "tile_w", "tile_h", "cols", "rows")},
+        "layout": {k: data.planches.get(k) for k in ("quality", "tile_w", "tile_h", "cols", "rows", "band_h", "gutter")},
         "observations": {
             "occurrences": [
                 {

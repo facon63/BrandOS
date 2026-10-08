@@ -20,6 +20,7 @@ import pytest
 
 from krokcut import benchmark
 from krokcut import benchmark_report as br
+from krokcut import sheets as real_sheets
 from krokcut import techniques
 from krokcut.benchmark import (
     BenchAnalyzer,
@@ -184,6 +185,7 @@ def make_fake_media(media) -> dict:
     sheets.chunk_s = CHUNK_S
     sheets.tiles_per_sheet = TILES_PER_SHEET
     sheets.calls = []
+    sheets.effect_instant = real_sheets.effect_instant  # règle pure (instant et fenêtre de la case d'un effet)
 
     def build_sheets(src, work, *, quality, duration, plans, image_events, sound_events, music, silences, words, progress):
         sheets.calls.append(quality)
@@ -1205,12 +1207,15 @@ def test_unmeasurable_values_are_unknown_not_zero(workspace):
     for k in range(2):
         fake_video(store, cfg, "wankil-studio", f"w{k}", {
             "punch_ins": 30, "zoom_scale_median": 1.5, "music_segments": 2, "music_level_vs_voice_db": -18.0,
-            "music_pct": 60.0, "sound_events_per_min": 8.0, "sound_level_vs_voice_db": 2.0, "pause_p90": 0.7})
+            "music_pct": 60.0, "sound_events_per_min": 8.0, "sound_level_vs_voice_db": 2.0, "pause_p90": 0.7,
+            "events_with_visual_pct": 40.0, "gags_per_min": 1.5, "gag_force_mean": 3.2, "shot_p25": 0.8})
         fake_video(store, cfg, "krok-et-mil", f"k{k}", {
             "punch_ins": 0, "zoom_scale_median": 0.0, "music_segments": 0, "music_level_vs_voice_db": 0.0,
-            "music_pct": 0.0, "sound_events_per_min": 0.0, "sound_level_vs_voice_db": 0.0, "pause_p90": 0.0})
+            "music_pct": 0.0, "sound_events_per_min": 0.0, "sound_level_vs_voice_db": 0.0, "pause_p90": 0.0,
+            "events_with_visual_pct": 0.0, "gags_per_min": 0.0, "gag_force_mean": 0.0, "shot_p25": 0.0})
     table = {r["id"]: r for r in br.metrics_table(store, cfg)}
-    for rid in ("zoom_scale_median", "music_level_vs_voice_db", "sound_level_vs_voice_db", "pause_p90"):
+    for rid in ("zoom_scale_median", "music_level_vs_voice_db", "sound_level_vs_voice_db", "pause_p90",
+                "events_with_visual_pct", "gag_force_mean", "shot_p25"):
         assert "krok-et-mil" not in table[rid]["values"] and table[rid]["values"]["wankil-studio"]["n"] == 2, rid
     assert table["music_pct"]["values"]["krok-et-mil"]["median"] == 0.0  # 0 % de musique, lui, est une mesure
     props = {p["field"] for p in br.live_report(store, cfg)["proposals"]}

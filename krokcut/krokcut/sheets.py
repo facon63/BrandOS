@@ -218,46 +218,59 @@ def _plan_finder(plans: list[dict]):
     return find
 
 
+EFFECT_REASONS = {"zoom": "zoom", "fige": "fige", "noir_et_blanc": "nb", "bandes_cinema": "bandes",
+                  "son": "son", "musique": "musique", "silence": "silence",
+                  **{k: "flash" for k in TRANSIENT_TYPES}, **{k: "fondu" for k in FADE_TYPES}}
+
+
+def effect_instant(kind: str, t: float, dur: float = 0.0) -> tuple[float, float, float] | None:
+    """Case d'un effet (table du §3.7) : (instant de la case, lo, hi), ou None pour un type inconnu.
+
+    `kind` : type d'un événement de l'image (zoom, flash_blanc…, fige, fondu_noir…, noir_et_blanc,
+    bandes_cinema), ou « son », « musique » (début ou fin) et « silence ». [lo, hi] : où une case montre
+    l'effet et porte son étiquette — après le zoom, le son ou le silence (à 0,35 s au plus), ou à l'intérieur
+    du transitoire, du figé, du fondu, du N&B, des bandes. Sert aussi à citer la bonne case dans les textes
+    envoyés à Claude.
+    """
+    t, dur = float(t), float(dur or 0.0)
+    if kind in ("zoom", "son", "musique", "silence"):
+        return t + EVENT_OFFSETS[kind], t, t + EVENT_GAP
+    if kind in TRANSIENT_TYPES:  # l'image du milieu du transitoire (instant de son début, pas entre deux images)
+        frames = max(1, int(round(dur * MEASURE_FPS)))
+        return t + (frames // 2) / MEASURE_FPS, t, t + dur
+    if kind == "fige":
+        return t + EVENT_OFFSETS["fige"], t, t + dur
+    if kind in FADE_TYPES:
+        return t + dur / 2, t, t + dur
+    if kind == "noir_et_blanc":
+        return t + EVENT_OFFSETS["nb"], t, t + dur
+    if kind == "bandes_cinema":
+        return t + EVENT_OFFSETS["bandes"], t, t + dur
+    return None
+
+
 def _event_instants(image_events: list[dict], sound_events: list[dict], music: list[dict],
                     silences: list[dict]) -> list[dict]:
-    """Instants des cases d'effets (table du §3.7) : {t, lo, hi, reason, plan, salience, transient}.
-
-    [lo, hi] : où une case déjà choisie suffit (elle montre l'effet et porte son étiquette) : après le
-    zoom, le son ou le silence (à 0,35 s au plus), ou à l'intérieur du figé, du fondu, du N&B, des bandes.
-    """
+    """Instants des cases d'effets (effect_instant) : {t, lo, hi, reason, plan, salience, transient}."""
     out = []
 
-    def point(t: float, offset: float, reason: str, **kw) -> None:
-        out.append({"t": t + offset, "lo": t, "hi": t + EVENT_GAP, "reason": reason, **kw})
-
-    def span(t: float, dur: float, at: float, reason: str, **kw) -> None:
-        out.append({"t": at, "lo": t, "hi": t + dur, "reason": reason, **kw})
+    def add(kind: str, t: float, dur: float = 0.0, **kw) -> None:
+        found = effect_instant(kind, t, dur)
+        if found is not None:
+            at, lo, hi = found
+            out.append({"t": at, "lo": lo, "hi": hi, "reason": EFFECT_REASONS[kind], **kw})
 
     for e in image_events:
         kind = e.get("type", "")
-        t, dur = float(e["t"]), float(e.get("dur", 0.0))
-        kw = {"plan": e.get("plan")}
-        if kind == "zoom":
-            point(t, EVENT_OFFSETS["zoom"], "zoom", **kw)
-        elif kind in TRANSIENT_TYPES:  # l'image du milieu du transitoire (instant de son début, pas entre deux images)
-            frames = max(1, int(round(dur * MEASURE_FPS)))
-            span(t, dur, t + (frames // 2) / MEASURE_FPS, "flash", transient=True, **kw)
-        elif kind == "fige":
-            span(t, dur, t + EVENT_OFFSETS["fige"], "fige", **kw)
-        elif kind in FADE_TYPES:
-            span(t, dur, t + dur / 2, "fondu", **kw)
-        elif kind == "noir_et_blanc":
-            span(t, dur, t + EVENT_OFFSETS["nb"], "nb", **kw)
-        elif kind == "bandes_cinema":
-            span(t, dur, t + EVENT_OFFSETS["bandes"], "bandes", **kw)
+        add(kind, float(e["t"]), float(e.get("dur", 0.0)), plan=e.get("plan"), transient=kind in TRANSIENT_TYPES)
     for snd in sound_events:
         if snd.get("cat") != "autre":  # seuls les sons éditoriaux ont leur case
-            point(float(snd["t"]), EVENT_OFFSETS["son"], "son", salience=float(snd.get("salience", 0.0)))
+            add("son", float(snd["t"]), salience=float(snd.get("salience", 0.0)))
     for m in music:
         for t in (m["start"], m["end"]):
-            point(float(t), EVENT_OFFSETS["musique"], "musique", salience=0.0)
+            add("musique", float(t), salience=0.0)
     for c in silences:
-        point(float(c["t"]), EVENT_OFFSETS["silence"], "silence", salience=0.0)
+        add("silence", float(c["t"]), salience=0.0)
     return out
 
 
@@ -693,7 +706,7 @@ def build_sheets(src: Path, work: Path, *, quality: str, duration: float, plans,
         pass  # la planche de contrôle n'est qu'une aide visuelle
     data = {
         "version": SHEETS_VERSION, "quality": preset.id, "tile_w": preset.tile_w, "tile_h": preset.tile_h,
-        "cols": preset.cols, "rows": preset.rows,
+        "cols": preset.cols, "rows": preset.rows, "band_h": preset.band_h, "gutter": GUTTER,  # découpe d'une case
         "tiles": [{k: t[k] for k in ("id", "t", "plan", "new_plan", "reasons", "tags", "chunk", "sheet", "cell", "source")}
                   for t in tiles],
         "sheets": sheets, "chunks": chunks,

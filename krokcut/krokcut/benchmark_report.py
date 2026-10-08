@@ -32,11 +32,13 @@ from .benchmark import (
     claude_fp,
     current_claude_fp,
     current_local_fp,
+    event_kind,
+    event_tile,
     fmt_duration,
     fr,
     local_fp,
-    nearest_tile,
     norm_text,
+    tile_box,
 )
 from .config import AppConfig, StyleProfile, channel_bible
 from .library import Library
@@ -159,8 +161,13 @@ DEFINED_IF = {  # métrique -> compte qui doit être non nul pour qu'elle ait un
     "music_bpm_median": "music_segments",
     "music_level_vs_voice_db": "music_segments",
     "sound_level_vs_voice_db": "sound_events_per_min",
+    "events_with_visual_pct": "sound_events_per_min",
+    "gag_force_mean": "gags_per_min",
 }
-ZERO_IS_UNKNOWN = {"zoom_scale_median", "zoom_hold_median_s", "music_bpm_median", "pause_p50", "pause_p90", "reaction_tail_median"}
+ZERO_IS_UNKNOWN = {  # 0 impossible pour une vraie mesure (shot_p25 : moins de 4 plans, quartile non calculé)
+    "zoom_scale_median", "zoom_hold_median_s", "music_bpm_median", "pause_p50", "pause_p90", "reaction_tail_median",
+    "shot_p25",
+}
 
 # Réglages proposés : (champ, métriques par ordre de préférence, règle, bornes, arrondi, libellé)
 FIELDS: list[tuple[str, tuple[str, ...], str, tuple[float, float], str, str]] = [
@@ -679,9 +686,9 @@ def _local_events(doc: BenchDoc, source: str, data: VideoData, claude: bool) -> 
 
 
 def _example(doc: BenchDoc, data: VideoData, e: dict) -> dict:
+    """Un exemple mesuré : la case qui le montre (même règle que le choix des cases) et où la découper."""
     t = float(e.get("t", 0.0))
-    times = [x["t"] for x in data.tiles]
-    tile = nearest_tile(data.tiles, times, t + 0.1) or {}
+    tile = event_tile(data, event_kind(e), t, e.get("dur") or 0.0, plan=e.get("plan")) or {}
     desc = e.get("description") or e.get("label") or e.get("type") or e.get("cat") or ""
     return {
         "video_id": doc.id,
@@ -690,6 +697,7 @@ def _example(doc: BenchDoc, data: VideoData, e: dict) -> dict:
         "tile": tile.get("id", ""),
         "sheet": tile.get("sheet"),
         "cell": tile.get("cell"),
+        "box": tile_box(data.planches, tile.get("cell")),
         "description": desc,
     }
 
@@ -725,7 +733,8 @@ def technique_rates(store: BenchmarkStore, cfg: AppConfig | None = None, study: 
                     info = (agg.get("techniques") or {}).get(t.id) or {}
                     n = int(info.get("n") or 0)
                     examples = [
-                        {"video_id": doc.id, "video": doc.state.name, **{k: x.get(k) for k in ("t", "tile", "sheet", "cell")}, "description": x.get("description") or x.get("texte", "")}
+                        {"video_id": doc.id, "video": doc.state.name, **{k: x.get(k) for k in ("t", "tile", "sheet", "cell")},
+                         "box": tile_box(data.planches, x.get("cell")), "description": x.get("description") or x.get("texte", "")}
                         for x in info.get("examples") or []
                     ]
                     per_video[t.id][cid][doc.id] = (round(n / claude_minutes, 2), n, examples)
