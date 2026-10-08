@@ -71,12 +71,13 @@ def edit_video(tmp: Path, size: tuple[int, int] = (640, 360), fps: int = 30, cod
     g.append(f"mandelbrot={msrc}:end_pts=800,{up},trim=duration=8,setpts=PTS-STARTPTS[b0]")
     g.append(f"color=c=white:{src}:d=8[bw]")
     g.append(f"[b0][bw]overlay=enable='{_between(4.0, 4.0 + 2 * fr, fps)}'[B]")
-    # 16–24 : testsrc2 retourné, saut de 7 s dans la source à 20,0 (jump cut), puis 1 s figée
+    # 16–24 : testsrc2 retourné, 2 images noires à 18,0, saut de 7 s dans la source à 20,0 (jump cut), puis 1 s figée
     bw, bh = w // 4, h // 3  # un « personnage » qui traverse le décor : le saut de 7 s le déplace d'un coup
     g.append(f"testsrc2={src}:d=15,hflip[c00];smptebars=s={bw}x{bh}:r={fps}[cbox];"
              f"[c00][cbox]overlay=x='mod(t*{(w - bw) / 15:.2f},{w - bw})':y={h // 3}:shortest=1,split[c0][c1]")
     g.append("[c0]trim=0:4,setpts=PTS-STARTPTS[c0t];[c1]trim=11:15,setpts=PTS-STARTPTS[c1t]")
-    g.append("[c0t][c1t]concat=n=2:v=1:a=0,tpad=stop_mode=clone:stop_duration=1[C]")
+    g.append("[c0t][c1t]concat=n=2:v=1:a=0,tpad=stop_mode=clone:stop_duration=1,"
+             f"drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='{_between(2.0, 2.0 + 2 * fr, fps)}'[C]")  # 2 images noires à 18,0
     # 25–29,5 : barres SMPTE HD + boîte qui bouge, fondu au noir de 28 à 29, puis 0,5 s de noir
     g.append(f"smptehdbars={src}:d=4[d0]")
     g.append(_moving_box("d0", "d1", w, h, fps))
@@ -126,10 +127,12 @@ def edit_video(tmp: Path, size: tuple[int, int] = (640, 360), fps: int = 30, cod
     script.write_text(";\n".join(g), "utf-8")
     cmd = ["-filter_complex_script", str(script)]
     words: list[tuple[float, float]] = []
+    sound: dict = {}
     if audio:
-        voice, words = voice16(50.0, seed=3)
+        track, sound = edit_soundtrack()
+        words = sound["words"]
         wav = tmp / (stem + ".wav")
-        write_wav(wav, voice)
+        write_wav(wav, track)
         cmd += ["-i", str(wav), "-map", "[v]", "-map", "0:a"]
         cmd += ["-c:a", "libopus" if codec == "libvpx-vp9" else "aac", "-b:a", "96k"]
     else:
@@ -145,6 +148,7 @@ def edit_video(tmp: Path, size: tuple[int, int] = (640, 360), fps: int = 30, cod
             {"t": 38.4, "end": 39.2, "scale": 1.5, "cx": 0.6, "cy": 0.4},
         ],
         "flash": 12.0,
+        "black_frame": 18.0,
         "insert": 37.0,
         "freeze": (24.0, 25.0),
         "fade": (28.0, 29.0),
@@ -153,6 +157,7 @@ def edit_video(tmp: Path, size: tuple[int, int] = (640, 360), fps: int = 30, cod
         "bars": (34.0, 35.0),
         "no_cut_zones": [(8.1, 15.9), (43.1, 46.4), (46.6, 49.9)],
         "words": words,
+        "sound": sound,
     }
     return dst, truth
 
@@ -413,6 +418,123 @@ def place(x: np.ndarray, at: float, sig: np.ndarray, gain: float = 1.0) -> None:
     i = int(round(at * SR))
     m = min(len(sig), len(x) - i)
     x[i:i + m] += gain * sig[:m]
+
+
+def rms_db(x: np.ndarray) -> float:
+    return float(10 * np.log10(np.mean(np.asarray(x, np.float64) ** 2) + 1e-12))
+
+
+def voice_rms_db(x: np.ndarray, words: list[tuple[float, float]]) -> float:
+    """Niveau RMS de la parole (sur les mots seulement)."""
+    return rms_db(np.concatenate([x[int(s * SR):int(e * SR)] for s, e in words]))
+
+
+def place_at(x: np.ndarray, at: float, sig: np.ndarray, rel_db: float | None, voice_db: float, *,
+             ref: str = "actif") -> None:
+    """Pose `sig` à `at`, à `rel_db` au-dessus de la voix (None : tel quel) ; référence de niveau : la partie
+    active du son, ou sa fin (« fin » : une montée est jugée sur ses 100 dernières ms)."""
+    gain = 1.0
+    if rel_db is not None:
+        part = sig[-SR // 10:] if ref == "fin" else sig[np.abs(sig) > 0.05 * np.abs(sig).max()]
+        gain = min(10 ** ((voice_db + rel_db - rms_db(part)) / 20), 0.98 / np.abs(sig).max())
+    place(x, at, sig, gain)
+
+
+# catégorie, son, où (« mot » : sur une syllabe, « trou » : entre deux phrases), niveau par rapport à la voix
+EVENT_SPECS = [
+    ("bip", bip, "mot", 15), ("tonal", ding, "mot", 15), ("boum", boum, "trou", 6),
+    ("whoosh", whoosh, "trou", 10), ("clic", clic, "trou", 10), ("sature", sature, "trou", None),
+    ("glissando", glissando, "trou", 6), ("montee", montee, "trou", 15),
+]
+
+
+def sound_mix(seed: int = 1, deep: bool = False, seconds: float = 80.0) -> tuple[np.ndarray, list, list]:
+    """Voix synthétique + les 8 sortes de sons marquants, placés au hasard (graine) : bip et ding sur une
+    syllabe, les autres dans un trou de parole. Renvoie (signal, mots, [(instant, catégorie, durée)])."""
+    v, words = (deep_voice16 if deep else voice16)(seconds, seed=seed)
+    x = v + (0.002 * np.random.default_rng(seed).standard_normal(len(v))).astype(np.float32)
+    vr = voice_rms_db(v, words)
+    ws = sorted(words)
+    gaps = [(a[1], b[0]) for a, b in zip(ws, ws[1:]) if b[0] - a[1] >= 0.7]
+    inside = [(s, e) for s, e in ws if e - s >= 0.3]
+    rng = np.random.default_rng(100 + seed)
+    used: list[float] = []
+
+    def free(t: float) -> bool:
+        return all(abs(t - u) > 2.5 for u in used) and 3 < t < seconds - 4
+
+    plan = []
+    for cat, make, where, rel in EVENT_SPECS:
+        spots = [a + 0.3 for a, _ in gaps] if where == "trou" else [s + 0.4 * (e - s) for s, e in inside]
+        t = next((float(t) for t in rng.permutation(spots) if free(float(t))), None)
+        if t is None:
+            continue
+        used.append(t)
+        sig = make()
+        place_at(x, t, sig, rel, vr, ref="fin" if cat == "montee" else "actif")
+        plan.append((round(t, 3), cat, len(sig) / SR))
+    return np.clip(x, -1, 1).astype(np.float32), words, sorted(plan)
+
+
+def music_at(sig: np.ndarray, voice_db_median: float, rel_db: float) -> np.ndarray:
+    """Règle une musique pour que son niveau de fond (20e centile de E, trames de 10 ms) soit `rel_db` sous
+    le niveau médian de la voix (même mesure que level_vs_voice_db)."""
+    frames = sig[: len(sig) // 160 * 160].astype(np.float64).reshape(-1, 160)
+    p20 = float(np.percentile(10 * np.log10(np.mean(frames**2, axis=1) + 1e-10), 20))
+    return (sig * 10 ** ((voice_db_median + rel_db - p20) / 20)).astype(np.float32)
+
+
+def voice_median_db(x: np.ndarray, words: list[tuple[float, float]]) -> float:
+    """Médiane du niveau par trame de 10 ms sur les mots (mesure de soundscan pour la voix)."""
+    frames = x[: len(x) // 160 * 160].astype(np.float64).reshape(-1, 160)
+    e = 10 * np.log10(np.mean(frames**2, axis=1) + 1e-10)
+    mask = np.zeros(len(e), bool)
+    for s, t in words:
+        mask[max(0, int((s - 0.05) * 100)):int(np.ceil((t + 0.05) * 100))] = True
+    return float(np.median(e[mask]))
+
+
+def edit_soundtrack(seconds: float = 50.0, seed: int = 3) -> tuple[np.ndarray, dict]:
+    """Bande-son du faux montage : voix, musique rythmée sous la voix (coupée net sur une coupe), bruitages
+    calés sur l'image (clic sur le zoom, boum sur la coupe…), et un silence complet coupé net.
+
+    Autour d'un bruitage posé « dans un trou », la voix est coupée (fondus de 20 ms) : la vérité ne dépend pas
+    du hasard des pauses. Renvoie (signal, vérité).
+    """
+    v, words = voice16(seconds, seed=seed)
+    rng = np.random.default_rng(seed)
+    music = (9.0, 29.5, 110.0)
+    events = [  # (instant, catégorie, son, où, niveau / voix)
+        (4.0, "clic", clic(), "trou", 10), (8.0, "boum", boum(), "trou", 6), (15.9, "whoosh", whoosh(), "trou", 10),
+        (21.0, "bip", bip(), "mot", 15), (26.5, "tonal", ding(), "mot", 15), (31.5, "sature", sature(), "trou", None),
+        (34.5, "glissando", glissando(), "trou", 6), (44.5, "montee", montee(), "trou", 15),
+    ]
+    keep = np.ones(len(v))
+    holes = [(t - 0.3, t + len(sig) / SR + 0.3) for t, _, sig, where, _ in events if where == "trou"]
+    # les mots touchés par un trou disparaissent en entier : la voix reprend sur un début de mot
+    gone = [(s, e) for s, e in words if any(a - 0.05 < e and s < b + 0.05 for a, b in holes)]
+    for s, e in gone:
+        keep[int((s - 0.01) * SR):int((e + 0.03) * SR)] = 0
+    for a, b in holes:
+        keep[int(a * SR):int(b * SR)] = 0
+    v = (v * keep).astype(np.float32)
+    words = [w for w in words if w not in gone]
+    # silence complet coupé net au milieu d'un mot : le son tombe d'un coup (la parole s'arrête au milieu)
+    long_word = next((s, e) for s, e in words if s > 40.5 and e - s >= 0.3 and all(abs(s - t) > 1.5 for t, *_ in events))
+    silence = (round(long_word[0] + 0.15, 2), 0.6)
+    vr = voice_rms_db(v, words)
+    vmed = voice_median_db(v, words)
+    x = v + (0.002 * rng.standard_normal(len(v))).astype(np.float32)
+    place(x, music[0], music_at(music16(music[1] - music[0], music[2]), vmed, -12))
+    plan = []
+    for t, cat, sig, _, rel in events:
+        place_at(x, t, sig, rel, vr, ref="fin" if cat == "montee" else "actif")
+        plan.append({"t": t, "cat": cat, "dur": round(len(sig) / SR, 3)})
+    i = int(silence[0] * SR)
+    x[i:i + int(silence[1] * SR)] = 0.0  # silence complet, coupé net (le son ne s'éteint pas avant)
+    truth = {"words": words, "events": plan, "music": {"start": music[0], "end": music[1], "bpm": music[2]},
+             "silence": {"t": silence[0], "dur": silence[1]}}
+    return np.clip(x, -1, 1).astype(np.float32), truth
 
 
 # ------------------------------------------------------------- cache des tests

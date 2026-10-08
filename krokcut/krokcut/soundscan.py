@@ -87,6 +87,7 @@ RISER_MIN_S, RISER_MAX_S = 1.0, 4.0
 RISER_SMOOTH = 5
 RISER_ENVELOPE = 20  # enveloppe (maximum sur 200 ms) : passe par-dessus les syllables
 RISER_POINTS = 5  # niveaux à 0, 25, 50, 75 et 100 % de la montée
+RISER_LENGTH_STEP = 10  # durées essayées : de 4 s à 1 s par pas de 100 ms
 RISER_PEAK_TAIL = 0.15  # le plus fort est atteint à la fin (derniers 15 %)
 RISER_MAX_DIP = 6.0  # sur la 2e moitié, le niveau ne retombe jamais de plus de 6 dB (une voix : creux entre syllabes)
 RISER_SPEARMAN = 0.8
@@ -155,7 +156,8 @@ KICK_REF_PCT = 90  # niveau de référence d'un temps : 90e centile des attaques
 FADE_KICK_DB = 4.0  # derniers temps suivis 4 dB sous ceux de la fenêtre : la musique s'éteint (fondu)
 BEAT_SEARCH_S = 3.0  # on suit les temps jusqu'à 3 s au-delà des fenêtres positives
 BOUND_SEARCH_S = 3.0  # bornes cherchées jusqu'à 3 s au-delà des dernières preuves de musique
-PRESENT_DB = 6.0  # trame sans parole à moins de 6 dB du niveau de la musique : elle est encore là
+PRESENT_DB = 6.0  # trame sans parole à moins de 6 dB du niveau de la musique : elle est encore là...
+LOUDER_DB = 10.0  # ... sauf 10 dB au-dessus : c'est un autre son (bruitage, cri)
 ABSENT_MIN = 5  # 50 ms de trames à 12 dB sous ce niveau (même entre deux mots) : elle est partie
 ABSENT_HOLD_S = 2.0  # ... sans qu'elle revienne dans les 2 s
 LEVEL_MIN_FRAMES = 10  # trames sans parole nécessaires pour mesurer un niveau (sinon 20e centile de tout)
@@ -803,25 +805,30 @@ def _risers(feats: Features, speech: np.ndarray, voice_db: float) -> list[dict]:
     before = view[:n].max(axis=1)  # max sur [i−10, i)
     after = np.lib.stride_tricks.sliding_window_view(np.pad(e, (0, 4), mode="edge"), 3)[1 : n + 1].max(axis=1)
     drops = np.flatnonzero(before - after >= RISER_DROP)
+    cs = np.concatenate([[0.0], np.cumsum(smooth)])  # moyennes glissantes en O(1)
+    lengths = np.arange(int(RISER_MAX_S * FPS), int(RISER_MIN_S * FPS) - 1, -RISER_LENGTH_STEP)
+    frac = np.linspace(0.0, 1.0, RISER_POINTS)
     out: list[dict] = []
     last_end = -1
     for i in drops:
         if i <= last_end:
             continue
+        lens = lengths[lengths <= i]  # de la plus longue à la plus courte
+        if not len(lens):
+            continue
+        starts = i - lens
+        pos = starts[:, None] + (frac[None, :] * (lens[:, None] - RISER_SMOOTH)).astype(int)
+        levels = (cs[pos + RISER_SMOOTH] - cs[pos]) / RISER_SMOOTH  # niveaux à 0, 25, 50, 75 et 100 %
+        total = levels[:, -1] - levels[:, 0]
+        cheap = ((total >= RISER_MIN_RISE) & (np.diff(levels, axis=1).min(axis=1) >= RISER_STEADY * total)
+                 & (levels[:, -1] - levels[:, RISER_POINTS // 2] >= RISER_LAST_HALF_DB))
         best = None
-        for length in range(int(RISER_MAX_S * FPS), int(RISER_MIN_S * FPS) - 1, -10):
-            a = i - length
-            if a < 0:
-                continue
+        for j in np.flatnonzero(cheap):
+            a = int(starts[j])
             seg = smooth[a:i]
-            pos = np.linspace(0, len(seg) - RISER_SMOOTH, RISER_POINTS).astype(int)
-            levels = np.array([seg[j : j + RISER_SMOOTH].mean() for j in pos])
-            total = float(levels[-1] - levels[0])
-            if (total >= RISER_MIN_RISE and _spearman(seg) >= RISER_SPEARMAN
-                    and float(np.diff(levels).min()) >= RISER_STEADY * total
-                    and float(levels[-1] - levels[len(levels) // 2]) >= RISER_LAST_HALF_DB
+            if (int(np.argmax(seg)) >= (1 - RISER_PEAK_TAIL) * len(seg)
                     and float(dip[a + len(seg) // 2 : i].max()) <= RISER_MAX_DIP
-                    and int(np.argmax(seg)) >= (1 - RISER_PEAK_TAIL) * len(seg)):
+                    and _spearman(seg) >= RISER_SPEARMAN):
                 best = a
                 break
         if best is None:
@@ -1091,7 +1098,8 @@ def _walk_beats(feats: Features, w: int, lag: float, direction: int, limit: int)
 def _bound(e: np.ndarray, speech: np.ndarray, anchor: int, fallback: int, bed: float, direction: int) -> tuple[int, bool]:
     """Borne d'une musique (direction +1 : fin, −1 : début), à partir d'un instant où elle est sûrement là.
 
-    Trames « présentes » : sans parole, à moins de 6 dB du niveau de la musique. Trames « absentes » : à
+    Trames « présentes » : sans parole, à moins de 6 dB du niveau de la musique (et pas 10 dB au-dessus :
+    un bruitage n'est pas la musique). Trames « absentes » : à
     12 dB sous ce niveau, parole ou non (la musique ne peut pas jouer sous le bruit de fond : c'est la
     preuve qu'elle est partie, même entre deux mots). La borne suit la dernière présence après laquelle la
     musique reste absente (≥ 50 ms d'absence en 2 s, sans retour). Si la parole cache la transition, on
@@ -1103,7 +1111,7 @@ def _bound(e: np.ndarray, speech: np.ndarray, anchor: int, fallback: int, bed: f
     idx = np.arange(anchor, stop, direction)
     idx = idx[(idx >= 0) & (idx < n)]
     free = idx[~speech[idx]]
-    present = free[e[free] >= bed - PRESENT_DB]
+    present = free[(e[free] >= bed - PRESENT_DB) & (e[free] <= bed + LOUDER_DB)]
     absent = idx[e[idx] <= bed - CUT_DROP]
     hold = int(ABSENT_HOLD_S * FPS)
     for p in [anchor, *present.tolist()]:
@@ -1425,10 +1433,13 @@ def analyze_sound(
                            on_block=lambda f: progress(0.1 + 0.6 * f, "Analyse du son"))
     speech = speech_mask(feats.n, words, vad)
     voice_db = _voice_level(feats.E, speech)
-    progress(0.75, "Bruitages")
-    raw_events = detect_events(feats, speech, voice_db)
-    progress(0.85, "Musique et silences")
+    progress(0.75, "Musique")
     music = detect_music(feats, speech)
+    progress(0.8, "Bruitages et silences")
+    beats = [(m["start"], m["end"]) for m in music["segments"] if m["kind"] == "rythmee"]
+    # dans une musique rythmée, un « autre son marquant » est un temps de la musique elle-même
+    raw_events = [ev for ev in detect_events(feats, speech, voice_db)
+                  if not (ev["cat"] == "autre" and any(a <= ev["t"] < b for a, b in beats))]
     sil = detect_silences(feats.E, speech)
     pauses = pause_stats(words)
     tail = reaction_tail(words, cuts)

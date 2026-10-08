@@ -131,17 +131,24 @@ def test_coupes_exactes_sans_fausse_alerte(montage):
     assert m["jump_cut_pct"] == pytest.approx(100 / len(truth["cuts"]), abs=0.1)
 
 
-def test_flash_et_image_inseree_ne_sont_pas_des_coupes(montage):
+def test_flash_noir_et_image_inseree_ne_sont_pas_des_coupes(montage):
     _, truth, res = montage
     flashes = events_of(res, "flash_blanc")
     inserts = events_of(res, "image_inseree")
+    blacks = events_of(res, "noir_bref")
     assert len(flashes) == 1 and abs(flashes[0]["t"] - truth["flash"]) <= FRAME
     assert len(inserts) == 1 and abs(inserts[0]["t"] - truth["insert"]) <= FRAME
+    assert len(blacks) == 1 and abs(blacks[0]["t"] - truth["black_frame"]) <= FRAME
     assert inserts[0]["dur"] == pytest.approx(4 * FRAME, abs=FRAME)
-    assert not events_of(res, "noir_bref")
-    for t in (truth["flash"], truth["insert"]):
+    assert blacks[0]["dur"] == pytest.approx(2 * FRAME, abs=FRAME) and flashes[0]["dur"] == pytest.approx(2 * FRAME, abs=FRAME)
+    for t in (truth["flash"], truth["insert"], truth["black_frame"]):
         assert all(abs(c - t) > 0.3 for c in cut_times(res))
     assert flashes[0]["plan"] == "P002"  # dans le plan mandelbrot, qui n'est pas coupé en deux
+    assert blacks[0]["plan"] == "P003"
+    assert [e["id"] for e in res["events"] if e["id"].startswith("F")] == ["F01", "F02", "F03"]
+    assert not events_of(res, "noir")  # l'image noire brève n'est pas aussi comptée comme un noir
+    m = res["metrics"]
+    assert m["flashes_per_min"] == pytest.approx(1.2) and m["inserts_per_min"] == pytest.approx(2.4)
 
 
 def test_zoom_sec_de_krokcut_trouve_et_apparie(montage):
