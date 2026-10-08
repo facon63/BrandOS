@@ -1,0 +1,324 @@
+{
+ "name": "mil",
+ "upscale": 4,
+ "src_size": [
+  500,
+  700
+ ],
+ "parts": [
+  {
+   "name": "pelvis",
+   "z": 7,
+   "parent": "torso",
+   "pivot": [
+    247,
+    492
+   ],
+   "constructed_partly": true,
+   "file": "layers/pelvis.png",
+   "offset_src": [
+    183,
+    481
+   ],
+   "size_px": [
+    504,
+    92
+   ]
+  },
+  {
+   "name": "torso",
+   "z": 10,
+   "parent": null,
+   "pivot": [
+    247,
+    480
+   ],
+   "file": "layers/torso.png",
+   "offset_src": [
+    178,
+    226
+   ],
+   "size_px": [
+    592,
+    1096
+   ]
+  },
+  {
+   "name": "arm_L",
+   "z": 20,
+   "parent": "torso",
+   "pivot": [
+    186,
+    302
+   ],
+   "bones": {
+    "shoulder": [
+     186,
+     302
+    ],
+    "elbow": [
+     178,
+     392
+    ],
+    "wrist": [
+     174,
+     506
+    ],
+    "hand": [
+     176,
+     520
+    ]
+   },
+   "constructed_partly": true,
+   "file": "layers/arm_L.png",
+   "offset_src": [
+    153,
+    277
+   ],
+   "size_px": [
+    220,
+    1064
+   ]
+  },
+  {
+   "name": "arm_R",
+   "z": 20.1,
+   "parent": "torso",
+   "pivot": [
+    314,
+    304
+   ],
+   "bones": {
+    "shoulder": [
+     314,
+     304
+    ],
+    "elbow": [
+     324,
+     392
+    ],
+    "wrist": [
+     322,
+     506
+    ],
+    "hand": [
+     322,
+     520
+    ]
+   },
+   "constructed_partly": true,
+   "file": "layers/arm_R.png",
+   "offset_src": [
+    291,
+    274
+   ],
+   "size_px": [
+    248,
+    1104
+   ]
+  },
+  {
+   "name": "head",
+   "z": 30,
+   "parent": "torso",
+   "pivot": [
+    250,
+    258
+   ],
+   "file": "layers/head.png",
+   "offset_src": [
+    168,
+    124
+   ],
+   "size_px": [
+    556,
+    588
+   ]
+  },
+  {
+   "name": "hair",
+   "z": 32,
+   "parent": "head",
+   "pivot": [
+    240,
+    150
+   ],
+   "file": "layers/hair.png",
+   "offset_src": [
+    166,
+    83
+   ],
+   "size_px": [
+    656,
+    424
+   ]
+  },
+  {
+   "name": "headphones",
+   "z": 35,
+   "parent": "head",
+   "pivot": [
+    250,
+    180
+   ],
+   "file": "layers/headphones.png",
+   "offset_src": [
+    154,
+    90
+   ],
+   "size_px": [
+    748,
+    612
+   ]
+  },
+  {
+   "name": "leg_L",
+   "z": 5,
+   "parent": "torso",
+   "pivot": [
+    220.5,
+    489.82142857142856
+   ],
+   "constructed": true,
+   "bones": {
+    "hip": [
+     219.6,
+     508.9214285714286
+    ],
+    "knee": [
+     216.0,
+     577.1357142857142
+    ],
+    "ankle": [
+     206.1,
+     642.6214285714286
+    ]
+   },
+   "file": "layers/leg_L.png",
+   "offset_src": [
+    177,
+    432
+   ],
+   "size_px": [
+    364,
+    872
+   ]
+  },
+  {
+   "name": "leg_R",
+   "z": 5.1,
+   "parent": "torso",
+   "pivot": [
+    279.9,
+    489.82142857142856
+   ],
+   "constructed": true,
+   "bones": {
+    "hip": [
+     279.0,
+     508.9214285714286
+    ],
+    "knee": [
+     280.8,
+     577.1357142857142
+    ],
+    "ankle": [
+     273.6,
+     641.2571428571429
+    ]
+   },
+   "file": "layers/leg_R.png",
+   "offset_src": [
+    245,
+    433
+   ],
+   "size_px": [
+    272,
+    848
+   ]
+  },
+  {
+   "name": "shoe_L",
+   "z": 4,
+   "parent": "leg_L",
+   "pivot": [
+    206.1,
+    642.6214285714286
+   ],
+   "constructed": true,
+   "file": "layers/shoe_L.png",
+   "offset_src": [
+    166,
+    623
+   ],
+   "size_px": [
+    300,
+    232
+   ]
+  },
+  {
+   "name": "shoe_R",
+   "z": 4.1,
+   "parent": "leg_R",
+   "pivot": [
+    273.6,
+    641.2571428571429
+   ],
+   "constructed": true,
+   "file": "layers/shoe_R.png",
+   "offset_src": [
+    244,
+    622
+   ],
+   "size_px": [
+    360,
+    208
+   ]
+  },
+  {
+   "name": "eyes_open",
+   "z": 31,
+   "parent": "head",
+   "pivot": [
+    250,
+    258
+   ],
+   "variant": true,
+   "file": "layers/eyes_open.png",
+   "offset_src": [
+    181,
+    166
+   ],
+   "size_px": [
+    364,
+    164
+   ]
+  },
+  {
+   "name": "eyes_closed",
+   "z": 31.1,
+   "parent": "head",
+   "pivot": [
+    250,
+    258
+   ],
+   "variant": true,
+   "file": "layers/eyes_closed.png",
+   "offset_src": [
+    181,
+    168
+   ],
+   "size_px": [
+    364,
+    156
+   ]
+  }
+ ],
+ "top_y": 89,
+ "sole_y": 674,
+ "ground_x": 247.5,
+ "height_src": 585,
+ "world_per_src": 0.0017094017094017094,
+ "scale_vs_krok": 0.728,
+ "identity_color": "#95B822"
+}

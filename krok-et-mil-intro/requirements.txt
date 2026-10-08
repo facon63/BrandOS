@@ -1,0 +1,6 @@
+numpy>=2.0
+scipy>=1.13
+opencv-python-headless>=4.10
+scikit-image>=0.24
+pillow>=10.4
+skia-python>=138.0

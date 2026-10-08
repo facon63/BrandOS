@@ -1,0 +1,333 @@
+{
+ "name": "krok",
+ "upscale": 4,
+ "src_size": [
+  500,
+  500
+ ],
+ "parts": [
+  {
+   "name": "leg_L",
+   "z": 5,
+   "parent": "torso",
+   "pivot": [
+    226,
+    338
+   ],
+   "bones": {
+    "hip": [
+     225,
+     352
+    ],
+    "knee": [
+     221,
+     402
+    ],
+    "ankle": [
+     213,
+     452
+    ]
+   },
+   "file": "layers/leg_L.png",
+   "offset_src": [
+    178,
+    296
+   ],
+   "size_px": [
+    396,
+    636
+   ]
+  },
+  {
+   "name": "leg_R",
+   "z": 5.1,
+   "parent": "torso",
+   "pivot": [
+    292,
+    338
+   ],
+   "bones": {
+    "hip": [
+     291,
+     352
+    ],
+    "knee": [
+     293,
+     402
+    ],
+    "ankle": [
+     291,
+     452
+    ]
+   },
+   "file": "layers/leg_R.png",
+   "offset_src": [
+    255,
+    296
+   ],
+   "size_px": [
+    292,
+    624
+   ]
+  },
+  {
+   "name": "shoe_L",
+   "z": 4,
+   "parent": "leg_L",
+   "pivot": [
+    210,
+    450
+   ],
+   "file": "layers/shoe_L.png",
+   "offset_src": [
+    177,
+    432
+   ],
+   "size_px": [
+    248,
+    188
+   ]
+  },
+  {
+   "name": "shoe_R",
+   "z": 4.1,
+   "parent": "leg_R",
+   "pivot": [
+    285,
+    449
+   ],
+   "file": "layers/shoe_R.png",
+   "offset_src": [
+    260,
+    431
+   ],
+   "size_px": [
+    304,
+    172
+   ]
+  },
+  {
+   "name": "torso",
+   "z": 10,
+   "parent": null,
+   "pivot": [
+    262,
+    330
+   ],
+   "file": "layers/torso.png",
+   "offset_src": [
+    169,
+    146
+   ],
+   "size_px": [
+    688,
+    796
+   ]
+  },
+  {
+   "name": "strings",
+   "z": 12,
+   "parent": "torso",
+   "pivot": [
+    264,
+    196
+   ],
+   "file": "layers/strings.png",
+   "offset_src": [
+    241,
+    188
+   ],
+   "size_px": [
+    196,
+    244
+   ]
+  },
+  {
+   "name": "arm_L",
+   "z": 20,
+   "parent": "torso",
+   "pivot": [
+    190,
+    206
+   ],
+   "bones": {
+    "shoulder": [
+     190,
+     206
+    ],
+    "elbow": [
+     182,
+     266
+    ],
+    "wrist": [
+     190,
+     322
+    ],
+    "hand": [
+     192,
+     342
+    ]
+   },
+   "file": "layers/arm_L.png",
+   "offset_src": [
+    150,
+    181
+   ],
+   "size_px": [
+    272,
+    732
+   ]
+  },
+  {
+   "name": "arm_R",
+   "z": 20.1,
+   "parent": "torso",
+   "pivot": [
+    322,
+    214
+   ],
+   "bones": {
+    "shoulder": [
+     322,
+     214
+    ],
+    "elbow": [
+     332,
+     266
+    ],
+    "wrist": [
+     333,
+     320
+    ],
+    "hand": [
+     331,
+     340
+    ]
+   },
+   "file": "layers/arm_R.png",
+   "offset_src": [
+    302,
+    183
+   ],
+   "size_px": [
+    200,
+    724
+   ]
+  },
+  {
+   "name": "cap_brim",
+   "z": 22,
+   "parent": "head",
+   "pivot": [
+    200,
+    112
+   ],
+   "file": "layers/cap_brim.png",
+   "offset_src": [
+    163,
+    95
+   ],
+   "size_px": [
+    196,
+    176
+   ]
+  },
+  {
+   "name": "hair_L",
+   "z": 25,
+   "parent": "head",
+   "pivot": [
+    214,
+    104
+   ],
+   "file": "layers/hair_L.png",
+   "offset_src": [
+    165,
+    86
+   ],
+   "size_px": [
+    320,
+    460
+   ]
+  },
+  {
+   "name": "hair_R",
+   "z": 25.1,
+   "parent": "head",
+   "pivot": [
+    305,
+    102
+   ],
+   "file": "layers/hair_R.png",
+   "offset_src": [
+    280,
+    88
+   ],
+   "size_px": [
+    216,
+    444
+   ]
+  },
+  {
+   "name": "head",
+   "z": 30,
+   "parent": "torso",
+   "pivot": [
+    262,
+    186
+   ],
+   "file": "layers/head.png",
+   "offset_src": [
+    212,
+    67
+   ],
+   "size_px": [
+    384,
+    484
+   ]
+  },
+  {
+   "name": "cap",
+   "z": 35,
+   "parent": "head",
+   "pivot": [
+    262,
+    84
+   ],
+   "file": "layers/cap.png",
+   "offset_src": [
+    187,
+    41
+   ],
+   "size_px": [
+    492,
+    288
+   ]
+  },
+  {
+   "name": "eyes_closed",
+   "z": 31,
+   "parent": "head",
+   "pivot": [
+    262,
+    186
+   ],
+   "variant": true,
+   "file": "layers/eyes_closed.png",
+   "offset_src": [
+    227,
+    106
+   ],
+   "size_px": [
+    296,
+    92
+   ]
+  }
+ ],
+ "top_y": 47,
+ "sole_y": 473,
+ "ground_x": 256.0,
+ "height_src": 426,
+ "world_per_src": 0.002347417840375587,
+ "identity_color": "#833280"
+}

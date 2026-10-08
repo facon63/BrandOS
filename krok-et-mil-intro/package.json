@@ -1,0 +1,12 @@
+{
+  "name": "krok-et-mil-intro",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Intro animée 15 s de la chaîne Krok et Mil — moteur raster procédural (Python/Skia), tout en code.",
+  "scripts": {
+    "setup": "python3 -m pip install -r requirements.txt",
+    "build:characters": "python3 tools/build_characters.py",
+    "review:step2": "python3 tools/review/make_sheets.py",
+    "render": "npm run build:characters && echo \"Rendu vidéo : disponible après validation de l'étape 3 (preuve de concept).\""
+  }
+}
