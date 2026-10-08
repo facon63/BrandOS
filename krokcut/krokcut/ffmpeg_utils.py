@@ -6,15 +6,21 @@ machine : aucune vidéo n'est envoyée sur internet.
 
 from __future__ import annotations
 
+import collections
 import json
 import os
+import queue
 import re
 import subprocess
 import sys
+import tempfile
+import threading
 from dataclasses import asdict, dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Iterator, Sequence
+
+import numpy as np
 
 ProgressCallback = Callable[[float], None]
 
@@ -401,3 +407,178 @@ def concat_listing(files: Sequence[str | Path], listing: Path) -> None:
         "".join(f"file '{_concat_escape(Path(f).resolve())}'\n" for f in files),
         encoding="utf-8",
     )
+
+
+# ------------------------------------------------------------- images brutes (numpy)
+STDERR_TAIL_LINES = 40
+PREFETCH_BLOCKS = 2  # blocs lus d'avance pendant que le consommateur calcule
+_STREAM_END = object()
+_PROGRESS_KEY = re.compile(r"^[a-z_0-9]+=")  # lignes de -progress, à ne pas confondre avec les erreurs
+
+
+def _passthrough_args() -> list[str]:
+    """Une image en entrée = une image en sortie (ni duplication ni suppression)."""
+    return ["-fps_mode", "passthrough"] if ffmpeg_major_version() >= 6 else ["-vsync", "0"]
+
+
+def stream_raw_frames(
+    args: Sequence[str],
+    frame_shape: tuple[int, int, int],
+    *,
+    block: int = 300,
+    duration: float | None = None,
+    on_progress: ProgressCallback | None = None,
+) -> Iterator[np.ndarray]:
+    """Lance ffmpeg (sortie rawvideo sur `pipe:1`) et produit des blocs uint8 (n, h, w, 3).
+
+    ffmpeg est tué dès que le consommateur s'arrête (exception, annulation, `close()`) : à utiliser
+    avec `contextlib.closing` pour que l'arrêt soit immédiat. Code de sortie non nul → FFmpegError
+    avec la fin de la sortie d'erreur.
+    """
+    h, w, c = frame_shape
+    frame_bytes = h * w * c
+    cmd = [binary("ffmpeg"), "-hide_banner", "-nostdin", "-y", "-loglevel", "error"]
+    if on_progress and duration:
+        cmd += ["-progress", "pipe:2", "-nostats"]
+    cmd += [str(a) for a in args]
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
+    except OSError as exc:
+        raise _launch_error(cmd[0], exc) from exc
+    tail: collections.deque[str] = collections.deque(maxlen=STDERR_TAIL_LINES)
+    out_time = [0.0]
+
+    def drain() -> None:  # lit la sortie d'erreur à part : un tube plein bloquerait ffmpeg
+        assert proc.stderr is not None
+        for raw in proc.stderr:
+            line = raw.decode("utf-8", "replace").rstrip()
+            if line.startswith("out_time_us=") or line.startswith("out_time_ms="):
+                value = line.split("=", 1)[1]
+                if value.isdigit():
+                    out_time[0] = int(value) / 1_000_000
+            elif line and not _PROGRESS_KEY.match(line):
+                tail.append(line)
+
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    # Lecture du tube dans un fil à part, quelques blocs d'avance : ffmpeg décode pendant que le
+    # consommateur calcule (sinon les deux s'attendent, le tube ne tenant que 64 Ko).
+    blocks: queue.Queue = queue.Queue(maxsize=PREFETCH_BLOCKS)
+    stop = threading.Event()
+
+    def put(item) -> None:
+        while not stop.is_set():
+            try:
+                blocks.put(item, timeout=0.1)
+                return
+            except queue.Full:
+                continue
+
+    def pump() -> None:
+        assert proc.stdout is not None
+        try:
+            while not stop.is_set():
+                buf = np.empty(block * frame_bytes, dtype=np.uint8)
+                view = memoryview(buf)
+                got = 0
+                while got < len(buf):
+                    n = proc.stdout.readinto(view[got:])
+                    if not n:
+                        break
+                    got += n
+                frames = got // frame_bytes
+                if frames:
+                    put(buf[: frames * frame_bytes].reshape(frames, h, w, c))
+                if got < len(buf):
+                    break
+        except Exception as exc:  # tube fermé (ffmpeg tué) ou erreur de lecture
+            put(exc)
+        finally:
+            put(_STREAM_END)
+
+    feeder = threading.Thread(target=pump, daemon=True)
+    feeder.start()
+    try:
+        while True:
+            item = blocks.get()
+            if item is _STREAM_END:
+                break
+            if isinstance(item, BaseException):
+                raise item
+            yield item
+            if on_progress and duration:
+                on_progress(min(1.0, out_time[0] / duration))
+    except BaseException:  # annulation, erreur du consommateur, close() : on ne laisse pas ffmpeg tourner
+        stop.set()
+        proc.kill()
+        proc.wait()
+        feeder.join(timeout=5)
+        reader.join(timeout=5)
+        raise
+    feeder.join(timeout=5)
+    code = proc.wait()
+    reader.join(timeout=5)
+    if code != 0:
+        raise FFmpegError(_format_error(cmd, "\n".join(tail)))
+
+
+def encode_rgb_jpeg(rgb: np.ndarray, dst: str | Path, q: int = 3) -> None:
+    """Écrit une image RGB (h, w, 3) uint8 en JPEG (sans Pillow : ffmpeg lit les pixels sur son entrée)."""
+    dst = Path(dst)
+    rgb = np.ascontiguousarray(rgb, dtype=np.uint8)
+    h, w = rgb.shape[:2]
+    tmp = dst.with_name(dst.stem + ".part" + dst.suffix)
+    cmd = [
+        binary("ffmpeg"), "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-i", "pipe:0",
+        "-frames:v", "1", "-q:v", str(q), str(tmp),
+    ]
+    proc = _launch(cmd, input=rgb.tobytes(), capture_output=True)
+    if proc.returncode != 0 or not tmp.exists():
+        tmp.unlink(missing_ok=True)
+        raise FFmpegError(_format_error(cmd, proc.stderr.decode("utf-8", "replace")))
+    tmp.replace(dst)
+
+
+def decode_jpegs(paths: Sequence[str | Path], w: int, h: int) -> np.ndarray:
+    """Décode des JPEG (tous au même format) en un tableau uint8 (n, h, w, 3), redimensionnés à w×h."""
+    if not paths:
+        return np.zeros((0, h, w, 3), dtype=np.uint8)
+    fd, name = tempfile.mkstemp(prefix="krokcut_images_", suffix=".txt")
+    os.close(fd)
+    listing = Path(name)
+    try:
+        concat_listing(paths, listing)
+        cmd = [
+            binary("ffmpeg"), "-hide_banner", "-nostdin", "-loglevel", "error",
+            "-f", "concat", "-safe", "0", "-i", str(listing),
+            "-vf", f"scale={w}:{h}:flags=area,format=rgb24", *_passthrough_args(),
+            "-f", "rawvideo", "pipe:1",
+        ]
+        proc = _launch(cmd, capture_output=True)
+    finally:
+        listing.unlink(missing_ok=True)
+    if proc.returncode != 0:
+        raise FFmpegError(_format_error(cmd, proc.stderr.decode("utf-8", "replace")))
+    data = np.frombuffer(proc.stdout, dtype=np.uint8)
+    if len(data) != len(paths) * h * w * 3:
+        raise FFmpegError(f"ffmpeg a rendu {len(data) // (h * w * 3)} images au lieu de {len(paths)}.")
+    return data.reshape(len(paths), h, w, 3)
+
+
+def extract_padded(src: str | Path, t: float, dst: str | Path, w: int = 640, h: int = 360) -> bool:
+    """Une image à l'instant t, au même cadrage que les images candidates (réduite, bandes noires)."""
+    try:
+        run_ffmpeg(
+            [
+                "-ss", f"{max(0.0, t):.3f}", "-i", str(src), "-frames:v", "1", "-an",
+                "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
+                f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1",
+                "-q:v", "4", str(dst),
+            ]
+        )
+    except FFmpegUnavailable:
+        raise
+    except FFmpegError:
+        return False
+    return Path(dst).exists()
