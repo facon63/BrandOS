@@ -15,11 +15,14 @@ from pathlib import Path
 
 import numpy as np
 
+from krokcut.ffmpeg_utils import binary, filter_script_args
+
 SR = 16000
 
 
 def _ffmpeg(*args: str, stdin: bytes | None = None) -> None:
-    head = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"] + ([] if stdin is not None else ["-nostdin"])
+    # Le même ffmpeg que KrokCut (sur le Mac de test : ~/KrokCut/bin, version 9)
+    head = [binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y"] + ([] if stdin is not None else ["-nostdin"])
     subprocess.run([*head, *args], check=True, input=stdin)
 
 
@@ -126,7 +129,7 @@ def edit_video(tmp: Path, size: tuple[int, int] = (640, 360), fps: int = 30, cod
     dst = tmp / (stem + ext)
     script = tmp / (stem + "_graphe.txt")
     script.write_text(";\n".join(g), "utf-8")
-    cmd = ["-filter_complex_script", str(script)]
+    cmd = filter_script_args(script)  # -filter_complex_script n'existe plus dans ffmpeg 7 et suivants
     words: list[tuple[float, float]] = []
     sound: dict = {}
     if audio:
