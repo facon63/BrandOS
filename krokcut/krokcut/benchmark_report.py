@@ -23,6 +23,8 @@ from .benchmark import (
     ALPHA,
     LOCAL_STEPS,
     MAX_MINUTES,
+    MUSIC_CHANGE,
+    MUSIC_END,
     QUALITY_LABELS,
     BenchDoc,
     BenchmarkStore,
@@ -33,6 +35,7 @@ from .benchmark import (
     current_claude_fp,
     current_local_fp,
     event_kind,
+    event_label,
     event_tile,
     fmt_duration,
     fr,
@@ -676,10 +679,12 @@ def _local_events(doc: BenchDoc, source: str, data: VideoData, claude: bool) -> 
         return [e for e in events if kept(e)]
     if kind == "M":
         if sub == "coupure_nette":
-            return [m | {"t": m["end"]} for m in data.music if m.get("end_kind") == "coupure_nette" and kept(m)]
+            return [m | {"t": m["end"], "description": f"fin de musique ({MUSIC_END['coupure_nette']})"}
+                    for m in data.music if m.get("end_kind") == "coupure_nette" and kept(m)]
         if sub == "changes":
-            return [{"id": m["id"], **ch} for m in data.music for ch in m.get("changes") or []]
-        return [m | {"t": m["start"]} for m in data.music if kept(m)]
+            return [{"id": m["id"], **ch, "description": f"changement dans la musique ({MUSIC_CHANGE.get(ch.get('why', ''), ch.get('why', ''))})"}
+                    for m in data.music for ch in m.get("changes") or []]
+        return [m | {"t": m["start"], "description": "début de musique"} for m in data.music if kept(m)]
     if kind == "C":
         return [c for c in data.silences if c.get(sub)]
     return None
@@ -689,7 +694,7 @@ def _example(doc: BenchDoc, data: VideoData, e: dict) -> dict:
     """Un exemple mesuré : la case qui le montre (même règle que le choix des cases) et où la découper."""
     t = float(e.get("t", 0.0))
     tile = event_tile(data, event_kind(e), t, e.get("dur") or 0.0, plan=e.get("plan")) or {}
-    desc = e.get("description") or e.get("label") or e.get("type") or e.get("cat") or ""
+    desc = e.get("description") or event_label(e)
     return {
         "video_id": doc.id,
         "video": doc.state.name,

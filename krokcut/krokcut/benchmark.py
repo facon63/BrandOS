@@ -838,6 +838,17 @@ def event_kind(e: dict) -> str:
     return {"S": "son", "M": "musique", "C": "silence"}.get((e.get("id") or "")[:1], "")
 
 
+def event_time(data: VideoData, kind: str, t: float, dur: float = 0.0) -> float:
+    """Instant où les planches montrent l'effet (celui de sa case), borné à la vidéo.
+
+    C'est lui qui range un effet dans un extrait : un whoosh juste avant la coupe qui ouvre l'extrait suivant
+    y est lu avec la case qui le montre, pas avec une case d'avant.
+    """
+    found = _media("sheets").effect_instant(kind, t, dur) if kind else None
+    at = found[0] if found else float(t)
+    return min(max(at, 0.0), max(0.0, data.duration - 1e-3)) if data.duration else at
+
+
 def event_tile(data: VideoData, kind: str, t: float, dur: float = 0.0, *, plan: str | None = None,
                tiles: list[dict] | None = None) -> dict | None:
     """La case que les planches montrent pour un effet : même règle que le choix des cases
@@ -957,6 +968,19 @@ def _image_event_line(e: dict, tile: str) -> str:
     return f"[{fmt_t(e['t'])}] {e['id']} {IMAGE_EVENT_LABELS.get(kind, kind)}{length}{tail}"
 
 
+def event_label(e: dict) -> str:
+    """Libellé français d'un effet mesuré (exemples du rapport) : « flash blanc », « zoom sec ×1,25 »…"""
+    kind = e.get("type", "")
+    if kind == "zoom":
+        word = "zoom sec" if e.get("dir", "avant") == "avant" else "dézoom sec"
+        return f"{word} ×{fr(e['scale'], 2)}" if e.get("scale") else word
+    if kind in IMAGE_EVENT_LABELS:
+        return IMAGE_EVENT_LABELS[kind]
+    if (e.get("id") or "").startswith("C"):
+        return "silence complet" + (" (coupure nette)" if e.get("abrupt") else "")
+    return e.get("label") or e.get("cat") or ""
+
+
 def _music_desc(m: dict) -> str:
     bits = [MUSIC_KIND.get(m.get("kind", ""), "musique")]
     if m.get("kind") == "rythmee" and m.get("bpm"):
@@ -981,6 +1005,10 @@ def chunk_view(data: VideoData, chunk: dict) -> tuple[str, str, str, set[str], l
     def inside(t) -> bool:
         return t is not None and t0 <= float(t) < t1
 
+    def shown(kind: str, t, dur: float = 0.0) -> bool:
+        """L'effet est lu dans cet extrait : sa case (l'instant où les planches le montrent) y tombe."""
+        return t is not None and inside(event_time(data, kind, t, dur))
+
     rows: list[tuple[float, int, str]] = []
     # Transcription : toutes les lignes de l'extrait
     for line in data.lines:
@@ -997,11 +1025,11 @@ def chunk_view(data: VideoData, chunk: dict) -> tuple[str, str, str, set[str], l
         rows.append((float(line["start"]), 0, text))
     # Repères image
     for e in data.image_events:
-        if inside(e.get("t")):
+        if shown(e.get("type", ""), e.get("t"), e.get("dur") or 0.0):
             ids.add(e["id"])
             rows.append((float(e["t"]), 2, _image_event_line(e, tile_of(e.get("type", ""), e["t"], e.get("dur") or 0.0, e.get("plan")))))
     # Sons marquants : les plus saillants d'abord, le reste résumé
-    sounds = [e for e in data.sound_events if inside(e.get("t"))]
+    sounds = [e for e in data.sound_events if shown("son", e.get("t"))]
     sounds.sort(key=lambda e: (-(e.get("salience") or 0.0), e["t"]))
     listed, rest = sounds[:MAX_SOUND_LINES], sounds[MAX_SOUND_LINES:]
     for e in listed:
@@ -1015,20 +1043,20 @@ def chunk_view(data: VideoData, chunk: dict) -> tuple[str, str, str, set[str], l
             continue
         ids.add(m["id"])
         music_ids.append(m["id"])
-        if start < t0:
+        if event_time(data, "musique", start) < t0:
             rows.append((t0, 3, f"[{fmt_t(t0)}] {m['id']} musique en cours depuis {fmt_t(start)} ({_music_desc(m)})"))
-        else:
+        elif shown("musique", start):
             rows.append((start, 3, f"[{fmt_t(start)}] {m['id']} début de musique ({_music_desc(m)}) · ≈{tile_of('musique', start)}"))
         for ch in m.get("changes") or []:
             if inside(ch.get("t")):
                 why = MUSIC_CHANGE.get(ch.get("why", ""), ch.get("why", ""))
                 rows.append((float(ch["t"]), 3, f"[{fmt_t(ch['t'])}] {m['id']} changement dans la musique ({why})"))
-        if inside(end):
+        if shown("musique", end):
             end_kind = MUSIC_END.get(m.get("end_kind", ""), "fin")
             rows.append((end, 3, f"[{fmt_t(end)}] {m['id']} fin de musique ({end_kind}) · ≈{tile_of('musique', end)}"))
     # Silences
     for c in data.silences:
-        if inside(c.get("t")):
+        if shown("silence", c.get("t")):
             ids.add(c["id"])
             text = f"[{fmt_t(c['t'])}] {c['id']} silence complet {fr(c.get('dur', 0), 2)} s"
             text += " (coupure nette)" if c.get("abrupt") else ""
@@ -1056,7 +1084,10 @@ def _chunk_measures(data: VideoData, t0: float, t1: float, sounds: list[dict], m
     cuts = [c for c in data.cuts if t0 <= c["t"] < t1]
     jump = round(100 * sum(c.get("kind") == "meme_decor" for c in cuts) / len(cuts)) if cuts else 0
     parts = [f"{len(plans)} plans (médiane {fr(statistics.median(lengths)) if lengths else '0'} s, {jump} % de jump cuts probables)"]
-    zooms = [e for e in data.image_events if e.get("type") == "zoom" and e.get("dir", "avant") == "avant" and t0 <= e["t"] < t1]
+    zooms = [
+        e for e in data.image_events
+        if e.get("type") == "zoom" and e.get("dir", "avant") == "avant" and t0 <= event_time(data, "zoom", e["t"]) < t1
+    ]
     parts.append(f"{len(zooms)} zoom{'s' if len(zooms) > 1 else ''} sec{'s' if len(zooms) > 1 else ''}")
     editorial = [e for e in sounds if e.get("cat") != "autre"]
     cats = Counter(e.get("cat", "autre") for e in editorial).most_common(4)
@@ -1067,7 +1098,7 @@ def _chunk_measures(data: VideoData, t0: float, t1: float, sounds: list[dict], m
         parts.append(f"musique {round(100 * covered / span)} % ({', '.join(music_ids)})")
     else:
         parts.append("pas de musique détectée")
-    n_sil = sum(1 for c in data.silences if t0 <= c["t"] < t1)
+    n_sil = sum(1 for c in data.silences if t0 <= event_time(data, "silence", c["t"]) < t1)
     parts.append(f"{n_sil} silence{'s' if n_sil > 1 else ''}")
     speech = _union_length([(w["s"], w["e"]) for w in _line_words(data.lines)], t0, t1)
     parts.append(f"parole {round(100 * speech / span)} %")
@@ -1465,7 +1496,8 @@ def aggregate_observations(doc: BenchDoc) -> dict:
         return _per_min(sum(per_tech.get(t, {}).get("n", 0) for t in ids), minutes)
 
     # Zooms : Z mesurés que Claude confirme, plus les zooms qu'il voit sans mesure (lents, ciblés…)
-    zoom_events = [e for e in data.image_events if e.get("type") == "zoom" and _inside(float(e["t"]), analysed)]
+    # Un effet compte s'il a été lu par Claude : l'extrait qui le contient (au sens de sa case) a été regardé
+    zoom_events = [e for e in data.image_events if e.get("type") == "zoom" and _inside(event_time(data, "zoom", e["t"]), analysed)]
     confirmed = [e for e in zoom_events if verdicts.get(e["id"]) == "montage"]
     confirmed_t = [float(e["t"]) for e in confirmed]
     zoom_ids = {e["id"] for e in zoom_events}
@@ -1477,7 +1509,7 @@ def aggregate_observations(doc: BenchDoc) -> dict:
         and not any(abs(o["t"] - t) <= ZOOM_MATCH_S for t in confirmed_t)
     ]
     # Sons : seulement les catégories « éditoriales » (pas « autre »), selon le verdict de Claude
-    sounds = [e for e in data.sound_events if e.get("cat") != "autre" and _inside(float(e["t"]), analysed)]
+    sounds = [e for e in data.sound_events if e.get("cat") != "autre" and _inside(event_time(data, "son", e["t"]), analysed)]
     origin = {e["id"]: verdicts.get(e["id"], "incertain") for e in sounds}
     montage_cats = Counter(e.get("cat", "autre") for e in sounds if origin[e["id"]] == "montage")
     # Musique : part (en durée) des M jugées « montage »
