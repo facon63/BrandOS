@@ -4,8 +4,10 @@
   "private": true,
   "description": "Intro animée 10 s de la chaîne YouTube Krok et Mil (Remotion + audio procédural Python)",
   "scripts": {
+    "render": "bash scripts/render.sh",
     "studio": "remotion studio",
     "poc": "bash scripts/poc.sh",
+    "audio": "python3 audio/compose.py",
     "trace": "python3 tools/trace_heads.py",
     "check:heights": "python3 tools/check_heights.py",
     "typecheck": "tsc --noEmit"

@@ -1,0 +1,269 @@
+{
+ "_doc": "Source unique du minutage (image ET son). Les instants sont en temps musicaux (beat) + décalage éventuel en secondes. Changer bpm décale tout ; durée totale = duration.",
+ "bpm": 128,
+ "fps": 30,
+ "duration": 10.0,
+ "sections": {
+  "hook": 0,
+  "u1": 1,
+  "u2": 6,
+  "u3": 11,
+  "break": 15,
+  "u4": 16
+ },
+ "musicEndBeat": 20,
+ "events": [
+  {
+   "name": "hook_coin",
+   "kind": "coin",
+   "beat": 0
+  },
+  {
+   "name": "hook_whoosh",
+   "kind": "whoosh",
+   "beat": 0,
+   "offset": 0.02,
+   "dur": 0.3,
+   "up": true,
+   "gain": 0.6
+  },
+  {
+   "name": "glitch_1",
+   "kind": "glitch",
+   "beat": 1,
+   "offset": -0.075,
+   "seed": 0,
+   "gain": 0.8
+  },
+  {
+   "name": "glitch_2",
+   "kind": "glitch",
+   "beat": 6,
+   "offset": -0.075,
+   "seed": 1,
+   "gain": 0.8
+  },
+  {
+   "name": "glitch_3",
+   "kind": "glitch",
+   "beat": 11,
+   "offset": -0.075,
+   "seed": 2,
+   "gain": 0.8
+  },
+  {
+   "name": "glitch_4",
+   "kind": "glitch",
+   "beat": 16,
+   "offset": -0.075,
+   "seed": 3,
+   "gain": 0.45
+  },
+  {
+   "name": "u1_anticip",
+   "kind": "whoosh",
+   "beat": 2.5,
+   "dur": 0.25,
+   "up": true,
+   "gain": 0.4,
+   "pan": -0.3
+  },
+  {
+   "name": "u1_boing",
+   "kind": "boing",
+   "beat": 3,
+   "gain": 0.9
+  },
+  {
+   "name": "u1_coins",
+   "kind": "coin",
+   "beat": 4,
+   "gain": 0.45,
+   "pan": 0.3
+  },
+  {
+   "name": "u1_land",
+   "kind": "thump",
+   "beat": 4.5,
+   "gain": 0.4
+  },
+  {
+   "name": "u2_zap_krok",
+   "kind": "zap",
+   "beat": 7,
+   "seed": 0,
+   "gain": 0.85,
+   "pan": -0.2
+  },
+  {
+   "name": "u2_pop_blob",
+   "kind": "pop",
+   "beat": 7.25,
+   "base": 650,
+   "gain": 0.8,
+   "pan": -0.6
+  },
+  {
+   "name": "u2_zap_mil",
+   "kind": "zap",
+   "beat": 8.5,
+   "seed": 2,
+   "gain": 0.85,
+   "pan": 0.2
+  },
+  {
+   "name": "u2_pop_rat",
+   "kind": "pop",
+   "beat": 8.75,
+   "base": 820,
+   "gain": 0.8,
+   "pan": -0.3
+  },
+  {
+   "name": "u2_zap_mini",
+   "kind": "zap",
+   "beat": 9.5,
+   "seed": 4,
+   "gain": 0.6,
+   "pan": 0.0
+  },
+  {
+   "name": "u2_pop_mini",
+   "kind": "pop",
+   "beat": 9.75,
+   "base": 980,
+   "gain": 0.6,
+   "pan": -0.4
+  },
+  {
+   "name": "u3_roar",
+   "kind": "roar",
+   "beat": 11.5,
+   "gain": 0.9,
+   "pan": 0.3
+  },
+  {
+   "name": "u3_fwoosh",
+   "kind": "fwoosh",
+   "beat": 12.25,
+   "gain": 0.9,
+   "pan": 0.2
+  },
+  {
+   "name": "u3_impact",
+   "kind": "thump",
+   "beat": 12.9,
+   "gain": 0.5,
+   "pan": 0.1
+  },
+  {
+   "name": "u3_log_jump",
+   "kind": "whoosh",
+   "beat": 13.5,
+   "dur": 0.3,
+   "up": true,
+   "gain": 0.5
+  },
+  {
+   "name": "u3_jump_cam",
+   "kind": "whoosh",
+   "beat": 14.75,
+   "dur": 0.3,
+   "up": false,
+   "gain": 0.35
+  },
+  {
+   "name": "u4_land",
+   "kind": "thump",
+   "beat": 16,
+   "gain": 0.9
+  },
+  {
+   "name": "logo_0",
+   "kind": "letter",
+   "beat": 16,
+   "offset": 0.2,
+   "i": 0,
+   "gain": 0.7,
+   "pan": -0.6
+  },
+  {
+   "name": "logo_1",
+   "kind": "letter",
+   "beat": 16,
+   "offset": 0.2586,
+   "i": 1,
+   "gain": 0.7,
+   "pan": -0.45
+  },
+  {
+   "name": "logo_2",
+   "kind": "letter",
+   "beat": 16,
+   "offset": 0.3172,
+   "i": 2,
+   "gain": 0.7,
+   "pan": -0.3
+  },
+  {
+   "name": "logo_3",
+   "kind": "letter",
+   "beat": 16,
+   "offset": 0.3758,
+   "i": 3,
+   "gain": 0.7,
+   "pan": -0.15
+  },
+  {
+   "name": "logo_4",
+   "kind": "letter",
+   "beat": 16,
+   "offset": 0.4344,
+   "i": 4,
+   "gain": 0.7,
+   "pan": 0.0
+  },
+  {
+   "name": "logo_5",
+   "kind": "letter",
+   "beat": 16,
+   "offset": 0.493,
+   "i": 5,
+   "gain": 0.7,
+   "pan": 0.15
+  },
+  {
+   "name": "logo_6",
+   "kind": "letter",
+   "beat": 16,
+   "offset": 0.5516,
+   "i": 6,
+   "gain": 0.7,
+   "pan": 0.3
+  },
+  {
+   "name": "logo_7",
+   "kind": "letter",
+   "beat": 16,
+   "offset": 0.6102,
+   "i": 7,
+   "gain": 0.7,
+   "pan": 0.45
+  },
+  {
+   "name": "logo_8",
+   "kind": "letter",
+   "beat": 16,
+   "offset": 0.6688,
+   "i": 8,
+   "gain": 0.7,
+   "pan": 0.6
+  },
+  {
+   "name": "u4_highfive",
+   "kind": "sparkle",
+   "beat": 19,
+   "gain": 0.8
+  }
+ ]
+}

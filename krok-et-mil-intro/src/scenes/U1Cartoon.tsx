@@ -4,7 +4,10 @@ import { Onomatopoeia } from '../fx/Onomatopoeia';
 import { Krok } from '../rig/Krok';
 import { Mil } from '../rig/Mil';
 import { Line, Shape } from '../rig/parts';
-import { pose } from '../rig/pose';
+import { mixPose, pose, Pose, runCycle } from '../rig/pose';
+import type { Expression } from '../rig/heads';
+import { easeInOut, easeOut, hop, keys, lerp, popIn, seg, wobble } from '../anim';
+import { BEAT, ev, SEC } from '../timeline';
 import { Cloud, DustPuff, GroundShadow, H, Place, rand, SkyGradient, Sparkle, SpeedLines, W } from './common';
 
 // Univers 1 : cartoon classique. Caméra légèrement basse, course en diagonale vers la caméra.
@@ -157,3 +160,164 @@ export const U1Key: React.FC = () => {
   );
 };
 
+
+// ====================================================================== animation
+// t = secondes depuis le début de l'univers 1 (0 -> 2,344 s). Repères calés sur timeline.json.
+
+const U1 = {
+  boing: ev('u1_boing') - SEC.u1, // rebond sur le champignon (temps 3)
+  coins: ev('u1_coins') - SEC.u1, // ramassage des pièces (temps 4)
+  land: ev('u1_land') - SEC.u1, // réception (temps 4,5)
+  end: SEC.u2 - SEC.u1,
+};
+
+/** Ancre entre les deux persos (monde), sol et échelle : course en diagonale vers la caméra. */
+const u1Anchor = (t: number) => {
+  const k: [number, number][] = [
+    [0, 0],
+    [U1.boing, 1],
+    [U1.land, 1.55],
+    [U1.end, 2.6],
+  ];
+  const p = keys(t, k, (x) => x);
+  const x = keys(p, [[0, 600], [1, 1043], [1.55, 1128], [2.6, 1650]], (v) => v);
+  const g = keys(p, [[0, 690], [1, 905], [1.55, 930], [2.6, 1150]], (v) => v);
+  const s = keys(p, [[0, 0.4], [1, 1.05], [1.55, 1.12], [2.6, 1.75]], (v) => v);
+  return { x, g, s };
+};
+const u1Cam = (t: number) => (2 * t) / U1.end; // 0 -> 2 (panoramique lent vers la droite)
+const camX = (t: number) => u1Cam(t) * 60;
+const SPREAD = 190;
+const LAUNCH_H = 230;
+
+export const U1Scene: React.FC<{ t: number }> = ({ t }) => {
+  const cam = u1Cam(t);
+  const cx = camX(t);
+  const a = u1Anchor(t);
+  const ph = t / BEAT; // un cycle de course par temps
+
+  // --- champignon-ressort (monde) placé là où Krok le touche
+  const aB = u1Anchor(U1.boing);
+  const shroomX = aB.x - SPREAD * aB.s; // monde
+  const shroomY = aB.g + 10;
+  const shroomS = aB.s;
+  const compress = keys(t, [[U1.boing - 0.03, 0], [U1.boing, 1], [U1.boing + 0.05, 0.7], [U1.boing + 0.12, -0.2], [U1.boing + 0.22, 0.08], [U1.boing + 0.32, 0]]);
+  const shroomTop = (70 * 0.5 + 10 + 86) * shroomS; // hauteur du chapeau compressé
+
+  // --- Krok : course, petit saut sur le champignon, propulsion, réception
+  const launch0 = U1.boing + 0.05;
+  const aL = u1Anchor(U1.land);
+  let kx = a.x - SPREAD * a.s;
+  let kAir = 0;
+  let kPose: Pose = runCycle(ph, 1);
+  let kSquash = 1;
+  let kExpr: Expression = 'base';
+  if (t >= U1.boing - 0.16 && t < U1.boing) {
+    const u = seg(t, U1.boing - 0.16, U1.boing);
+    kx = lerp(kx, shroomX, easeOut(u));
+    kAir = shroomTop * easeOut(u) + hop(t, U1.boing - 0.16, U1.boing, 40);
+    kPose = mixPose(runCycle(ph, 1), pose({ hipA: -30, kneeA: 50, hipB: 30, kneeB: -50, shA: -60, elA: -30, shB: 60, elB: 30, handA: 'open', handB: 'open' }), u);
+  } else if (t >= U1.boing && t < launch0) {
+    kx = shroomX;
+    kAir = shroomTop - compress * 30 * shroomS;
+    kSquash = 0.8;
+    kPose = pose({ hipA: -40, kneeA: 70, hipB: 40, kneeB: -70, shA: -100, elA: -20, shB: 100, elB: 20, handA: 'open', handB: 'open' });
+  } else if (t >= launch0 && t < U1.land) {
+    const u = seg(t, launch0, U1.land);
+    kx = lerp(shroomX, aL.x - SPREAD * aL.s, easeInOut(u));
+    kAir = (1 - u) * shroomTop + 4 * LAUNCH_H * u * (1 - u);
+    kSquash = 1 + 0.14 * Math.max(0, 1 - u * 2.5) - 0.05 * Math.max(0, u - 0.7) * 3;
+    kPose = pose({ hipA: -62, kneeA: 78, hipB: 58, kneeB: -74, footA: 10, footB: -10, shA: -150, elA: -18, shB: 150, elB: 20, handA: 'open', handB: 'open', head: -4 });
+    kExpr = u > 0.05 && u < 0.95 ? 'happy' : 'base';
+  } else if (t >= U1.land && t < U1.land + 0.2) {
+    kSquash = 1 - 0.18 * (1 - seg(t, U1.land, U1.land + 0.2)) + wobble(t, U1.land, 0.06);
+    kPose = mixPose(pose({ hipA: -30, kneeA: 40, hipB: 30, kneeB: -40, shA: -40, elA: -40, shB: 40, elB: 40 }), runCycle(ph, 1), seg(t, U1.land, U1.land + 0.2));
+  }
+
+  // --- Mil : même course, saut de haies blasé par-dessus le rocher
+  const mx = a.x + SPREAD * a.s;
+  const mAir = hop(t, U1.boing, U1.land - 0.04, 140);
+  let mPose: Pose = runCycle(ph + 0.5, 0.9);
+  let mSquash = 1;
+  if (t >= U1.boing - 0.1 && t < U1.boing) {
+    mSquash = 1 - 0.12 * seg(t, U1.boing - 0.1, U1.boing);
+    mPose = mixPose(runCycle(ph + 0.5, 0.9), pose({ hipA: -20, kneeA: 40, hipB: 20, kneeB: -40, shA: -20, shB: 20 }), seg(t, U1.boing - 0.1, U1.boing));
+  } else if (t >= U1.boing && t < U1.land - 0.04) {
+    mSquash = 1.05;
+    mPose = pose({ hipA: -62, kneeA: 18, hipB: 26, kneeB: -82, footA: -10, footB: -40, shA: -24, elA: 6, shB: 40, elB: 14, lean: -6, head: 6 });
+  } else if (t >= U1.land - 0.04 && t < U1.land + 0.18) {
+    mSquash = 1 - 0.14 * (1 - seg(t, U1.land - 0.04, U1.land + 0.18));
+  }
+  const aR = u1Anchor(U1.boing + 0.3);
+  const rockX = aR.x + SPREAD * aR.s + 10;
+  const rockY = aR.g + 6;
+
+  // --- pièces : placées sur la trajectoire de la main de Krok, ramassées au temps 4
+  const uC = seg(U1.coins, launch0, U1.land);
+  const aC = u1Anchor(U1.coins);
+  const handX = lerp(shroomX, aL.x - SPREAD * aL.s, easeInOut(uC)) + 70 * aC.s;
+  const handY = aC.g - ((1 - uC) * shroomTop + 4 * LAUNCH_H * uC * (1 - uC)) - 500 * aC.s;
+  const coinBase = { x: handX - 80, y: handY + 10 };
+  const coinsGone = t >= U1.coins;
+  const coinPop = seg(t, U1.coins, U1.coins + 0.22);
+
+  const hopText = popIn(t, U1.boing, 0.22) * (1 - seg(t, U1.land - 0.15, U1.land + 0.1));
+
+  return (
+    <g>
+      <U1Background cam={cam} t={t + 0.5} />
+      <g transform={`translate(${-cx} 0)`}>
+        {/* rocher */}
+        <g transform={`translate(${rockX} ${rockY}) scale(${aR.s})`}>
+          <ellipse cx={0} cy={0} rx={86} ry={16} fill="#00000030" />
+          <Shape d="M-80 0 C-90 -50 -50 -92 0 -92 C56 -92 92 -52 80 0 Z" fill="#9aa3b5" />
+          <path d="M30 -84 C70 -64 86 -30 80 0 L50 0 C66 -30 60 -60 30 -84 Z" fill="#7a8396" />
+          <path d="M-50 -60 C-40 -76 -24 -84 -8 -86" stroke="#d7deeb" strokeWidth={6} fill="none" strokeLinecap="round" />
+        </g>
+        <SpringShroom x={shroomX} y={shroomY} s={shroomS} compress={Math.max(0, compress)} />
+        {/* pièces */}
+        {[0, 1, 2].map((i) => {
+          const x = coinBase.x + i * 80;
+          const y = coinBase.y - i * 14 + Math.sin(t * 5 + i) * 6;
+          if (coinsGone && coinPop >= 1) return null;
+          return coinsGone ? (
+            <g key={i} opacity={1 - coinPop}>
+              <Coin x={x} y={y - coinPop * 40} s={1.1 + coinPop * 0.5} spin={1} />
+              <Sparkle x={x + 20} y={y - 30 - coinPop * 30} s={0.8 + coinPop} />
+            </g>
+          ) : (
+            <Coin key={i} x={x} y={y} s={1.1} spin={Math.cos(t * 7 + i * 1.3)} />
+          );
+        })}
+        {/* ombres au sol */}
+        <GroundShadow x={kx} y={(t > U1.boing - 0.16 && t < launch0 ? shroomY : a.g) + 6} w={95 * a.s} air={t > launch0 ? kAir : 0} />
+        <GroundShadow x={mx} y={a.g + 6} w={80 * a.s} air={mAir} />
+        {/* poussière */}
+        {t < U1.boing + 0.4 && <DustPuff x={mx - 60 * a.s} y={a.g - 4} s={a.s} t={seg(t, U1.boing - 0.05, U1.boing + 0.4)} />}
+        {t >= U1.land && t < U1.land + 0.45 && (
+          <>
+            <DustPuff x={kx - 70 * a.s} y={a.g} s={a.s} t={seg(t, U1.land, U1.land + 0.45)} />
+            <DustPuff x={mx + 50 * a.s} y={a.g} s={a.s * 0.9} t={seg(t, U1.land, U1.land + 0.45)} />
+          </>
+        )}
+        {t < U1.boing && (
+          <DustPuff x={a.x - 330 * a.s} y={a.g - 10} s={a.s * 0.9} t={(ph % 1)} />
+        )}
+        {t >= launch0 && t < launch0 + 0.35 && (
+          <SpeedLines x={kx - 40} y={a.g - kAir - 60} angle={110} len={150 * a.s} n={3} spread={70 * a.s} opacity={1 - seg(t, launch0, launch0 + 0.35)} />
+        )}
+        <Place x={kx} y={a.g - kAir} s={a.s}>
+          <g transform={`scale(${1 / Math.sqrt(kSquash)} ${kSquash})`}>
+            <Krok pose={kPose} expression={kExpr} armsOverHead={t >= U1.boing} />
+          </g>
+        </Place>
+        <Place x={mx} y={a.g - mAir} s={a.s}>
+          <g transform={`scale(${1 / Math.sqrt(mSquash)} ${mSquash})`}>
+            <Mil pose={mPose} />
+          </g>
+        </Place>
+      </g>
+      {hopText > 0 && <Onomatopoeia text="HOP !" x={470} y={600} size={140} rotate={-10 + wobble(t, U1.boing, 8)} scale={hopText} fill="#ffe14d" fill2="#ffb800" burst="#ff5fa2" />}
+    </g>
+  );
+};

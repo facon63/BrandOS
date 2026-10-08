@@ -1,11 +1,12 @@
 """Musique + SFX de l'intro Krok et Mil (chiptune + funk/électro, 128 BPM), mixage et mastering.
 
 Usage :
-  python3 audio/compose.py                      # -> build/audio/intro_mix.wav, music.wav, sfx.wav, stinger.wav
+  python3 audio/compose.py                      # -> build/audio/intro_mix.wav, intro_3s_mix.wav, stinger.wav
   python3 audio/compose.py --excerpt 6.5625 3   # + extrait de 3 s à partir de 6,5625 s
 
-Grille : 1 temps = 60/128 = 0,46875 s. Le DROP tombe au temps 16 = 7,5 s exactement.
-Les instants des SFX sont dans audio/cues.json (partagé avec l'animation).
+Grille : 1 temps = 60/bpm (0,46875 s à 128 BPM). Le DROP tombe au temps 16 = 7,5 s exactement.
+Tous les instants (sections, SFX) viennent de timeline.json, partagé avec l'animation.
+La musique est écrite en temps musicaux : changer `bpm` dans timeline.json la recale entièrement.
 """
 import argparse, json, os
 import numpy as np
@@ -18,10 +19,20 @@ from synth import (SR, Track, adsr, bandpass, bitcrush, exp_decay, highpass, low
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-BPM = 128
+TL = json.load(open(os.path.join(ROOT, 'timeline.json')))
+BPM = TL['bpm']
 BEAT = 60 / BPM
-DUR = 10.0
-B = lambda b: b * BEAT  # noqa: E731
+DUR = TL['duration']
+B = lambda b: b * BEAT  # noqa: E731  (durées en temps musicaux)
+SHORT_DUR = 3.0
+
+
+def time_map(version):
+    """Temps musical -> instant (s) dans la version rendue, ou None si la section n'y figure pas.
+    'full' : intro 10 s. 'short' : accroche (temps 0-1) puis directement le DROP + stinger (temps 16-20)."""
+    if version == 'full':
+        return lambda b: b * BEAT
+    return lambda b: b * BEAT if b < 1 else ((b - 15) * BEAT if b >= 16 else None)
 
 
 # ============================================================== instruments (renvoient du mono)
@@ -236,109 +247,116 @@ def sfx_sparkle():
 
 
 # ============================================================== arrangement
-def compose():
-    cues = json.load(open(os.path.join(HERE, 'cues.json')))
-    drums, bass, harm, leadT, fx = (Track(DUR) for _ in range(5))
+def compose(version='full'):
+    T = time_map(version)
+    dur = DUR if version == 'full' else SHORT_DUR
+    drums, bass, harm, leadT, fx = (Track(dur) for _ in range(5))
 
     # ---- 0 : accroche percussive
-    drums.add(0.0, kick(True), 1.0)
-    drums.add(0.0, crash(1.0), 0.35)
-    drums.add(B(0.5), clap(), 0.6)
+    drums.add(T(0), kick(True), 1.0)
+    drums.add(T(0), crash(1.0), 0.35)
+    drums.add(T(0.5), clap(), 0.6)
 
     # ---- U1 (temps 1-5) : do majeur, sautillant
     chordsU1 = {1: (36, [72, 76, 79, 84]), 2: (36, [72, 76, 79, 84]), 3: (41, [72, 77, 81, 84]), 4: (43, [74, 79, 83, 86]), 5: (36, [72, 76, 79, 84])}
     for b, (root, arp) in chordsU1.items():
-        drums.add(B(b), kick(), 0.9)
+        drums.add(T(b), kick(), 0.9)
         if b % 2 == 0:
-            drums.add(B(b), clap(), 0.55)
+            drums.add(T(b), clap(), 0.55)
         for s in (0.5,):
-            drums.add(B(b + s), hat(), 0.5)
-        drums.add(B(b + 0.25), hat(), 0.22)
-        drums.add(B(b + 0.75), hat(), 0.22)
-        bass.add(B(b), slap_bass(root, B(0.45)), 0.9)
-        bass.add(B(b + 0.5), slap_bass(root, B(0.2), pop=True), 0.6)
-        bass.add(B(b + 0.75), slap_bass(root, B(0.2)), 0.6)
+            drums.add(T(b + s), hat(), 0.5)
+        drums.add(T(b + 0.25), hat(), 0.22)
+        drums.add(T(b + 0.75), hat(), 0.22)
+        bass.add(T(b), slap_bass(root, B(0.45)), 0.9)
+        bass.add(T(b + 0.5), slap_bass(root, B(0.2), pop=True), 0.6)
+        bass.add(T(b + 0.75), slap_bass(root, B(0.2)), 0.6)
         for k in range(4):
-            harm.add(B(b + k * 0.25), chip(arp[k], B(0.24)), 0.7, p=-0.3)
+            harm.add(T(b + k * 0.25), chip(arp[k], B(0.24)), 0.7, p=-0.3)
     for b, d, m in [(1, 0.5, 79), (1.5, 0.25, 76), (1.75, 0.25, 79), (2, 0.5, 84), (3, 0.5, 81), (3.5, 0.5, 77), (4, 0.25, 83), (4.25, 0.25, 86), (4.5, 0.5, 83), (5, 0.75, 84)]:
-        leadT.add(B(b), chip(m, B(d) * 0.95, duty=0.5, decay=0.25), 0.9, p=0.2)
+        leadT.add(T(b), chip(m, B(d) * 0.95, duty=0.5, decay=0.25), 0.9, p=0.2)
 
     # ---- U2 (temps 6-10) : plus grave, légèrement distordu
     chordsU2 = {6: (36, [60, 63, 67]), 7: (36, [60, 63, 67]), 8: (32, [60, 63, 68]), 9: (34, [62, 65, 70]), 10: (34, [62, 65, 70])}
     for b, (root, ch) in chordsU2.items():
-        drums.add(B(b), kick(True), 0.95)
+        drums.add(T(b), kick(True), 0.95)
         if b in (7, 9):
-            drums.add(B(b), snare(), 0.7)
+            drums.add(T(b), snare(), 0.7)
         if b in (7, 9):
-            drums.add(B(b + 0.75), kick(), 0.6)
+            drums.add(T(b + 0.75), kick(), 0.6)
         for k in range(4):
-            drums.add(B(b + k * 0.25), hat(), 0.28 if k % 2 else 0.4)
+            drums.add(T(b + k * 0.25), hat(), 0.28 if k % 2 else 0.4)
         for k, mm in enumerate([root + 12, root + 12, root + 24, root + 12]):
-            bass.add(B(b + k * 0.25), dist_bass(mm, B(0.22)), 0.8)
-        harm.add(B(b + 0.5), stab([m + 12 for m in ch], B(0.3), bright=0.6), 0.55, p=0.25)
+            bass.add(T(b + k * 0.25), dist_bass(mm, B(0.22)), 0.8)
+        harm.add(T(b + 0.5), stab([m + 12 for m in ch], B(0.3), bright=0.6), 0.55, p=0.25)
         for k in range(4):
-            harm.add(B(b + k * 0.25), chip(ch[k % 3] + 12, B(0.22), duty=0.125, crush=True), 0.45, p=-0.35)
+            harm.add(T(b + k * 0.25), chip(ch[k % 3] + 12, B(0.22), duty=0.125, crush=True), 0.45, p=-0.35)
 
     # ---- U3 (temps 11-14) : tension, la mineur, percussions lourdes
     chordsU3 = {11: (33, [69, 72, 76]), 12: (33, [69, 72, 76]), 13: (29, [69, 72, 77]), 14: (28, [68, 71, 76])}
     for b, (root, ch) in chordsU3.items():
-        drums.add(B(b), kick(True), 1.0)
-        drums.add(B(b + 0.5), kick(), 0.55)
-        drums.add(B(b + 0.25), tom(110), 0.55, p=-0.3)
-        drums.add(B(b + 0.75), tom(82), 0.6, p=0.3)
+        drums.add(T(b), kick(True), 1.0)
+        drums.add(T(b + 0.5), kick(), 0.55)
+        drums.add(T(b + 0.25), tom(110), 0.55, p=-0.3)
+        drums.add(T(b + 0.75), tom(82), 0.6, p=0.3)
         if b in (12, 14):
-            drums.add(B(b), snare(), 0.8)
+            drums.add(T(b), snare(), 0.8)
         for k in range(4):
-            bass.add(B(b + k * 0.25), dist_bass(root + 12, B(0.2)), 0.7)
-        harm.add(B(b), pad(ch, B(1.0), cutoff=1200), 0.55)
+            bass.add(T(b + k * 0.25), dist_bass(root + 12, B(0.2)), 0.7)
+        harm.add(T(b), pad(ch, B(1.0), cutoff=1200), 0.55)
     for k in range(8):  # roulement qui monte vers le break
-        drums.add(B(14 + k * 0.125), snare(), 0.25 + 0.06 * k)
+        drums.add(T(14 + k * 0.125), snare(), 0.25 + 0.06 * k)
     for b, d, m in [(11, 0.5, 69), (11.5, 0.5, 72), (12, 0.5, 76), (12.5, 0.25, 74), (12.75, 0.25, 72), (13, 0.5, 72), (13.5, 0.5, 69), (14, 0.5, 71), (14.5, 0.25, 68), (14.75, 0.25, 71)]:
-        leadT.add(B(b), lead(m, B(d) * 0.95, bright=0.35), 0.75, p=0.15)
+        leadT.add(T(b), lead(m, B(d) * 0.95, bright=0.35), 0.75, p=0.15)
 
     # ---- temps 15 : break (silence quasi total) + riser (piste à part, non coupée par le break)
-    brk = Track(DUR)
-    brk.add(B(15), riser(BEAT), 0.5)
-    brk.add(B(15), crash(BEAT)[::-1], 0.3)
+    brk = Track(dur)
+    brk.add(T(15), riser(BEAT), 0.5)
+    brk.add(T(15), crash(BEAT)[::-1], 0.3)
 
     # ---- temps 16 : DROP (7,5 s) puis STINGER (temps 18-20)
-    drums.add(B(16), kick(True), 1.1)
-    drums.add(B(16), crash(1.8), 0.55)
-    drums.add(B(16), clap(1.2), 0.5)
+    drums.add(T(16), kick(True), 1.1)
+    drums.add(T(16), crash(1.8), 0.55)
+    drums.add(T(16), clap(1.2), 0.5)
     for b in (17, 18):
-        drums.add(B(b), kick(), 0.9)
-        drums.add(B(b + 0.5), hat(True), 0.3)
-        drums.add(B(b + 0.25), hat(), 0.25)
-        drums.add(B(b + 0.75), hat(), 0.25)
-    drums.add(B(17), clap(1.2), 0.6)
+        drums.add(T(b), kick(), 0.9)
+        drums.add(T(b + 0.5), hat(True), 0.3)
+        drums.add(T(b + 0.25), hat(), 0.25)
+        drums.add(T(b + 0.75), hat(), 0.25)
+    drums.add(T(17), clap(1.2), 0.6)
     for b, mm in [(16, 36), (16.5, 36), (16.75, 48), (17, 41), (17.5, 43), (18, 43), (18.5, 43)]:
-        bass.add(B(b), slap_bass(mm, B(0.4), pop=(mm >= 48)), 0.95)
+        bass.add(T(b), slap_bass(mm, B(0.4), pop=(mm >= 48)), 0.95)
     arps = {16: [72, 76, 79, 84], 17: [77, 81, 84, 89], 18: [79, 83, 86, 91]}
     for b, arp in arps.items():
         for k in range(4):
-            harm.add(B(b + k * 0.25), chip(arp[k] + 12, B(0.22), duty=0.25, decay=0.08), 0.5, p=-0.3)
+            harm.add(T(b + k * 0.25), chip(arp[k] + 12, B(0.22), duty=0.25, decay=0.08), 0.5, p=-0.3)
     # hook « lead brillant »
     for b, d, m in [(16, 0.25, 84), (16.25, 0.25, 88), (16.5, 0.5, 91), (17, 0.25, 89), (17.25, 0.25, 88), (17.5, 0.5, 86)]:
-        leadT.add(B(b), lead(m, B(d) * 0.95, bright=1.0), 0.9, p=0.1)
-    leadT.add(B(16), pad([60, 64, 67, 72], B(2.0), cutoff=2600), 0.4)
+        leadT.add(T(b), lead(m, B(d) * 0.95, bright=1.0), 0.9, p=0.1)
+    leadT.add(T(16), pad([60, 64, 67, 72], B(2.0), cutoff=2600), 0.4)
     # STINGER signature (temps 18 -> 20) : « Krok - et - Mil ! » puis accord final majeur apaisé
-    stinger_start = B(18)
-    st = Track(DUR)
+    stinger_start = T(18)
+    st = Track(dur)
     for b, d, m in [(18, 0.25, 79), (18.25, 0.25, 84), (18.5, 0.5, 88)]:
-        st.add(B(b), lead(m, B(d) * 0.95, bright=1.0), 1.0, p=0.1)
-        st.add(B(b), chip(m + 12, B(d) * 0.9, duty=0.5, decay=0.2), 0.4, p=-0.2)
-    st.add(B(19), kick(True), 0.9)
-    st.add(B(19), crash(1.2), 0.35)
-    st.add(B(19), clap(1.1), 0.4)
-    st.add(B(19), slap_bass(36, B(1.0)), 0.9)
-    st.add(B(19), pad([48, 55, 60, 64, 67, 72], 1.0, cutoff=2200), 0.9)
-    st.add(B(19), lead(84, 0.95, bright=0.8), 0.6, p=0.05)
+        st.add(T(b), lead(m, B(d) * 0.95, bright=1.0), 1.0, p=0.1)
+        st.add(T(b), chip(m + 12, B(d) * 0.9, duty=0.5, decay=0.2), 0.4, p=-0.2)
+    st.add(T(19), kick(True), 0.9)
+    st.add(T(19), crash(1.2), 0.35)
+    st.add(T(19), clap(1.1), 0.4)
+    st.add(T(19), slap_bass(36, B(1.0)), 0.9)
+    st.add(T(19), pad([48, 55, 60, 64, 67, 72], 1.0, cutoff=2200), 0.9)
+    st.add(T(19), lead(84, 0.95, bright=0.8), 0.6, p=0.05)
     for k, m in enumerate([84, 88, 91, 96, 100]):
-        st.add(B(19) + k * 0.045, chip(m, 0.3, duty=0.5, decay=0.1), 0.45, p=0.3)
+        st.add(T(19) + k * 0.045, chip(m, 0.3, duty=0.5, decay=0.1), 0.45, p=0.3)
 
-    # ---- SFX (cues partagés avec l'animation)
-    for c in cues['sfx']:
-        kind, t = c['kind'], c['t']
+    # ---- SFX (instants de timeline.json, partagés avec l'animation)
+    for c in TL['events']:
+        kind, beat = c['kind'], c['beat']
+        if version == 'short' and c['name'] in ('glitch_4',):
+            continue
+        t0 = T(beat)
+        if t0 is None:
+            continue
+        t = t0 + c.get('offset', 0.0)
         snd = {
             'coin': lambda: sfx_coin(),
             'whoosh': lambda: sfx_whoosh(c.get('dur', 0.35), c.get('up', True)),
@@ -395,15 +413,14 @@ def break_gate(n):
     return g
 
 
-def master(music, brk, fx, target_lufs=-14.0):
+def master(music, brk, fx, dur=DUR, gate_break=True, target_lufs=-14.0):
     ir = make_ir(1.6, 0.5)
     music_w = reverb(music, ir, wet=0.18)
-    music_w[: len(music)] *= 1  # (longueur conservée)
-    gate = break_gate(len(music_w))
-    music_w *= gate[:, None]
+    if gate_break:
+        music_w *= break_gate(len(music_w))[:, None]
     music_w[: len(brk)] += reverb(brk, make_ir(0.6, 0.2, seed=9), wet=0.2)[: len(brk)]
     fx_w = reverb(fx, make_ir(0.8, 0.25, seed=5), wet=0.12)
-    n = int(DUR * SR)
+    n = int(round(dur * SR))
     music_w = music_w[:n]
     fx_w = fx_w[:n]
     meter = pyln.Meter(SR)
@@ -415,9 +432,9 @@ def master(music, brk, fx, target_lufs=-14.0):
     # nettoyage du très grave (et de la composante continue) : passe-haut 32 Hz
     b, a = signal.butter(2, 32 / (SR / 2), btype='high')
     mix = signal.lfilter(b, a, mix, axis=0)
-    # fondu final propre (queue de reverb) : 9,55 -> 10,0 s
+    # fondu final propre (queue de reverb) sur les 0,45 dernières secondes
     t = np.arange(n) / SR
-    fade = np.clip((DUR - t) / 0.45, 0, 1) ** 1.5
+    fade = np.clip((dur - t) / 0.45, 0, 1) ** 1.5
     mix *= fade[:, None]
     # sonie cible puis limiteur true-peak
     mix *= 10 ** ((target_lufs - meter.integrated_loudness(mix)) / 20)
@@ -435,6 +452,18 @@ def master(music, brk, fx, target_lufs=-14.0):
     return mix, stats, fx_gain
 
 
+def export_stinger(stinger, st_start, path):
+    """Stinger seul (jingle) : du temps 18 à la fin de la queue de réverbe, -14 LUFS / -1,3 dBTP."""
+    st = reverb(stinger[int(st_start * SR):], make_ir(1.6, 0.5), wet=0.18)[: int(1.8 * SR)]
+    tt = np.arange(len(st)) / SR
+    st *= np.clip((1.8 - tt) / 0.5, 0, 1)[:, None] ** 1.5
+    meter = pyln.Meter(SR)
+    st *= 10 ** ((-14 - meter.integrated_loudness(st)) / 20)
+    st = limiter(st, -1.3)
+    sf.write(path, st.astype(np.float32), SR, subtype='PCM_24')
+    return {'lufs': round(meter.integrated_loudness(st), 2), 'true_peak_dbtp': round(true_peak_db(st), 2), 'dur_s': round(len(st) / SR, 3)}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', default=os.path.join(ROOT, 'build', 'audio'))
@@ -442,18 +471,15 @@ def main():
     ap.add_argument('--excerpt-out', default=None)
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
-    music, brk, fx, stinger, st_start = compose()
-    mix, stats, fx_gain = master(music, brk, fx)
+    report = {}
+    music, brk, fx, stinger, st_start = compose('full')
+    mix, report['intro_10s'], _ = master(music, brk, fx, DUR, gate_break=True)
     sf.write(os.path.join(args.out, 'intro_mix.wav'), mix.astype(np.float32), SR, subtype='PCM_24')
-    # stinger seul (jingle) : temps 18 -> fin de la queue, normalisé à -14 LUFS / -1 dBTP
-    st = reverb(stinger[int(st_start * SR):], make_ir(1.6, 0.5), wet=0.18)[: int(1.8 * SR)]
-    tt = np.arange(len(st)) / SR
-    st *= np.clip((1.8 - tt) / 0.5, 0, 1)[:, None] ** 1.5
-    meter = pyln.Meter(SR)
-    st *= 10 ** ((-14 - meter.integrated_loudness(st)) / 20)
-    st = limiter(st, -1.3)
-    sf.write(os.path.join(args.out, 'stinger.wav'), st.astype(np.float32), SR, subtype='PCM_24')
-    print(json.dumps(stats, indent=2))
+    report['stinger'] = export_stinger(stinger, st_start, os.path.join(args.out, 'stinger.wav'))
+    music3, brk3, fx3, _, _ = compose('short')
+    mix3, report['intro_3s'], _ = master(music3, brk3, fx3, SHORT_DUR, gate_break=False)
+    sf.write(os.path.join(args.out, 'intro_3s_mix.wav'), mix3.astype(np.float32), SR, subtype='PCM_24')
+    print(json.dumps(report, indent=2))
     if args.excerpt:
         s0, d = args.excerpt
         ex = mix[int(s0 * SR): int((s0 + d) * SR)].copy()

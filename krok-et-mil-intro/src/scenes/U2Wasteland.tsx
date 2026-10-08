@@ -1,9 +1,11 @@
 import React from 'react';
 import { INK, KROK, MIL } from '../palette';
 import { Onomatopoeia } from '../fx/Onomatopoeia';
-import { PuffCloud, RatMutant } from '../props/Creatures';
+import { BlobMutant, PuffCloud, RatMutant } from '../props/Creatures';
+import { easeOut, easeOutBack, keys, lerp, popIn, seg, wobble } from '../anim';
+import { BEAT, ev, SEC } from '../timeline';
 import { Blaster, BLASTER_MUZZLE } from '../props/Gear';
-import { Krok, toScreen } from '../rig/Krok';
+import { Krok, krokWrist, toScreen } from '../rig/Krok';
 import { Mil, milWrist } from '../rig/Mil';
 import { Line, Pt, Shape } from '../rig/parts';
 import { pose, Pose } from '../rig/pose';
@@ -189,6 +191,187 @@ export const U2Key: React.FC = () => {
         <Mil pose={milPose} outfit="wasteland" feet="left" holdA={<Blaster accent={MIL.identity} glow={MIL_GLOW} />} />
       </Place>
       <Onomatopoeia text="ZAP !" x={300} y={190} size={150} rotate={-8} fill="#d4ff4f" fill2="#8fd11f" burst="#ffffff" />
+    </g>
+  );
+};
+
+// ====================================================================== animation
+// t = secondes depuis le début de l'univers 2. Travelling latéral : ils courent de droite à gauche,
+// le décor défile vers la droite. Tirs calés sur timeline.json.
+
+const U2 = {
+  zapK: ev('u2_zap_krok') - SEC.u2,
+  popBlob: ev('u2_pop_blob') - SEC.u2,
+  zapM: ev('u2_zap_mil') - SEC.u2,
+  popRat: ev('u2_pop_rat') - SEC.u2,
+  zapMini: ev('u2_zap_mini') - SEC.u2,
+  popMini: ev('u2_pop_mini') - SEC.u2,
+};
+const SCROLL = 250; // px/s
+const scrollAt = (t: number) => SCROLL * t;
+
+/** Cycle de course de profil (vue 3/4 tournée vers la gauche). */
+const sideRun = (ph: number, base: Partial<Pose> = {}): Pose => {
+  const s = Math.sin(ph * Math.PI * 2);
+  const c = Math.cos(ph * Math.PI * 2);
+  return pose({
+    hipA: -32 * s,
+    kneeA: 8 + 62 * Math.max(0, -s),
+    hipB: 32 * s,
+    kneeB: 8 + 62 * Math.max(0, s),
+    footA: -32 * s + 30 * Math.max(0, -s),
+    footB: 32 * s + 30 * Math.max(0, s),
+    shB: 25 + 35 * s,
+    elB: 45,
+    handA: 'fist',
+    handB: 'fist',
+    lean: -8,
+    bob: -8 * Math.abs(c),
+    head: -4,
+    ...base,
+  });
+};
+
+const aimAngle = (from: Pt, to: Pt) => (Math.atan2(to[0] - from[0], to[1] - from[1]) * 180) / Math.PI;
+
+const muzzleOf = (wrist: { wrist: Pt; angle: number }, x: number, y: number, s: number): Pt => {
+  const a = (wrist.angle * Math.PI) / 180;
+  const { along, side } = BLASTER_MUZZLE;
+  const p: Pt = [wrist.wrist[0] + Math.sin(a) * along + Math.cos(a) * side, wrist.wrist[1] + Math.cos(a) * along - Math.sin(a) * side];
+  return toScreen(p, x, y, s);
+};
+
+const MuzzleFlash: React.FC<{ at: Pt; k: number; color: string }> = ({ at, k, color }) =>
+  k > 0 ? (
+    <g transform={`translate(${at[0]} ${at[1]}) scale(${0.6 + k})`} opacity={k}>
+      <path d="M0 -34 L9 -10 L34 -12 L14 4 L24 28 L0 14 L-24 28 L-14 4 L-34 -12 L-9 -10 Z" fill={color} stroke={INK} strokeWidth={4} strokeLinejoin="round" />
+      <circle r={9} fill="#fff" />
+    </g>
+  ) : null;
+
+export const U2Scene: React.FC<{ t: number }> = ({ t }) => {
+  const sc = scrollAt(t);
+  const s = 0.95;
+  const enter = easeOut(seg(t, 0, 0.4));
+  const kx = lerp(1160, 930, enter) + Math.sin(t * 2.2) * 10;
+  const mx = lerp(1700, 1440, enter) + Math.sin(t * 2.2 + 1) * 12;
+  const ph = t / BEAT;
+
+  // monde -> écran
+  const W2S = (wx: number) => wx + sc;
+  const blobX = W2S(100);
+  const carX = W2S(327);
+  const barrelX = W2S(-180);
+  const signX = W2S(1430);
+  const miniX = W2S(80);
+
+  // --- blob : surgit du sol puis se dégonfle quand Krok le touche
+  const blobUp = easeOutBack(seg(t, 0.12, 0.34), 2);
+  const blobHit = seg(t, U2.popBlob, U2.popBlob + 0.16);
+  const blobTarget: Pt = [blobX + 20, GROUND - 90];
+  // --- rat : bondit de derrière la carcasse, touché en l'air par Mil
+  const ratU = seg(t, 0.78, 1.3);
+  const ratPos: Pt = [lerp(W2S(560), W2S(290), ratU), lerp(GROUND - 120, 170, Math.sin((ratU * Math.PI) / 2))];
+  const ratHit = seg(t, U2.popRat, U2.popRat + 0.14);
+  // --- mini-blob
+  const miniUp = easeOutBack(seg(t, 1.38, 1.56), 2);
+  const miniHit = seg(t, U2.popMini, U2.popMini + 0.14);
+  const miniTarget: Pt = [miniX, GROUND - 50];
+
+  // --- visées (bras A), recul au tir
+  const recoil = (t0: number) => (t >= t0 ? 12 * (1 - seg(t, t0, t0 + 0.14)) : 0);
+  const kShoulder: Pt = [kx - 76 * s, GROUND - 250 * s];
+  const mShoulder: Pt = [mx - 46 * s, GROUND - 262 * s];
+  const kAimBlob = aimAngle(kShoulder, blobTarget);
+  const kAimMini = aimAngle(kShoulder, miniTarget);
+  const mAimRat = aimAngle(mShoulder, [ratPos[0] + 40, ratPos[1] + 40]);
+  const kAim = keys(t, [
+    [0, -62],
+    [0.3, kAimBlob],
+    [0.8, kAimBlob],
+    [1.05, -62],
+    [1.45, kAimMini],
+    [1.9, kAimMini],
+    [2.2, -62],
+  ]);
+  const mAim = keys(t, [
+    [0, -70],
+    [0.9, -70],
+    [1.1, mAimRat],
+    [1.45, mAimRat],
+    [1.75, -70],
+  ]);
+  const kPose = sideRun(ph, { shA: kAim + recoil(U2.zapK) + recoil(U2.zapMini) + 8, elA: -8 });
+  const mPose = sideRun(ph + 0.45, { shA: mAim + recoil(U2.zapM) + 8, elA: -6, lean: -10 });
+  const kMuzzle = muzzleOf(krokWrist(kPose, 'A'), kx, GROUND, s);
+  const mMuzzle = muzzleOf(milWrist(mPose, 'A'), mx, GROUND, s);
+
+  const beam = (t0: number, from: Pt, to: Pt, color: string) => {
+    if (t < t0 || t > t0 + 0.16) return null;
+    const grow = easeOut(seg(t, t0, t0 + 0.05));
+    const end: Pt = [lerp(from[0], to[0], grow), lerp(from[1], to[1], grow)];
+    return (
+      <g opacity={1 - seg(t, t0 + 0.1, t0 + 0.16)}>
+        <Beam from={from} to={end} color={color} t={t} />
+      </g>
+    );
+  };
+  const pan = popIn(t, U2.zapK, 0.2) * (1 - seg(t, 1.0, 1.15));
+  const zap = popIn(t, U2.zapM, 0.22) * (1 - seg(t, 1.9, 2.1));
+
+  return (
+    <g>
+      <U2Background cam={sc / 600} t={t + 3} />
+      <BentSign x={signX} y={GROUND - 40} />
+      <Barrel x={barrelX} y={GROUND - 20} s={0.9} />
+      <CarWreck x={carX} y={GROUND - 36} s={0.82} />
+      {/* rat (derrière la carcasse au départ) */}
+      {t >= 0.78 && ratHit < 1 && (
+        <g transform={`translate(${ratPos[0]} ${ratPos[1] + 110}) rotate(${-14 + ratU * 10}) scale(${0.95 * (1 - ratHit)})`}>
+          <RatMutant look={1} />
+        </g>
+      )}
+      {t >= U2.popRat && (
+        <g transform={`translate(${ratPos[0] - 30} ${ratPos[1] + 20}) scale(0.8)`}>
+          <PuffCloud t={seg(t, U2.popRat, U2.popRat + 0.7)} />
+        </g>
+      )}
+      {/* blob */}
+      {blobHit < 1 && t > 0.12 && (
+        <g transform={`translate(${blobX} ${GROUND - 10}) scale(${0.9 * blobUp})`}>
+          <BlobMutant squash={(1 + wobble(t, 0.34, 0.12)) * (1 - blobHit * 0.7)} look={1} />
+        </g>
+      )}
+      {t >= U2.popBlob && (
+        <g transform={`translate(${blobX} ${GROUND - 60}) scale(0.9)`}>
+          <PuffCloud t={seg(t, U2.popBlob, U2.popBlob + 0.8)} />
+        </g>
+      )}
+      {/* mini-blob */}
+      {t > 1.38 && miniHit < 1 && (
+        <g transform={`translate(${miniX} ${GROUND - 6}) scale(${0.45 * miniUp})`}>
+          <BlobMutant squash={(1 + wobble(t, 1.56, 0.12)) * (1 - miniHit * 0.7)} look={1} />
+        </g>
+      )}
+      {t >= U2.popMini && (
+        <g transform={`translate(${miniX} ${GROUND - 30}) scale(0.5)`}>
+          <PuffCloud t={seg(t, U2.popMini, U2.popMini + 0.7)} />
+        </g>
+      )}
+      {beam(U2.zapK, kMuzzle, blobTarget, KROK_GLOW)}
+      {beam(U2.zapM, mMuzzle, [ratPos[0] + 40, ratPos[1] + 40], MIL_GLOW)}
+      {beam(U2.zapMini, kMuzzle, miniTarget, KROK_GLOW)}
+      <Place x={kx} y={GROUND} s={s}>
+        <Krok pose={kPose} outfit="wasteland" feet="left" holdA={<Blaster accent={KROK.identity} glow={KROK_GLOW} />} />
+      </Place>
+      <Place x={mx} y={GROUND} s={s}>
+        <Mil pose={mPose} outfit="wasteland" feet="left" holdA={<Blaster accent={MIL.identity} glow={MIL_GLOW} />} />
+      </Place>
+      {t >= U2.zapK && t < U2.zapK + 0.09 && <MuzzleFlash at={kMuzzle} k={1 - seg(t, U2.zapK, U2.zapK + 0.09)} color={KROK_GLOW} />}
+      {t >= U2.zapM && t < U2.zapM + 0.09 && <MuzzleFlash at={mMuzzle} k={1 - seg(t, U2.zapM, U2.zapM + 0.09)} color={MIL_GLOW} />}
+      {t >= U2.zapMini && t < U2.zapMini + 0.09 && <MuzzleFlash at={kMuzzle} k={1 - seg(t, U2.zapMini, U2.zapMini + 0.09)} color={KROK_GLOW} />}
+      {pan > 0 && <Onomatopoeia text="PAN !" x={blobX + 40} y={680} size={96} rotate={8} scale={pan} fill="#e9b3ff" fill2="#b46bd8" />}
+      {zap > 0 && <Onomatopoeia text="ZAP !" x={300} y={190} size={150} rotate={-8 + wobble(t, U2.zapM, 6)} scale={zap} fill="#d4ff4f" fill2="#8fd11f" burst="#ffffff" />}
     </g>
   );
 };

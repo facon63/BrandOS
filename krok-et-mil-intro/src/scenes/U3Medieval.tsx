@@ -7,6 +7,9 @@ import { Krok } from '../rig/Krok';
 import { Mil } from '../rig/Mil';
 import { Shape } from '../rig/parts';
 import { pose, Pose } from '../rig/pose';
+import type { Pt } from '../rig/parts';
+import { easeIn, easeOut, hop, keys, lerp, popIn, seg } from '../anim';
+import { BEAT, ev, SEC } from '../timeline';
 import { GroundShadow, H, Place, rand, SkyGradient, W } from './common';
 
 // Univers 3 : médiéval au crépuscule. Caméra derrière eux, course vers l'horizon (profondeur), le dragon plonge d'en haut.
@@ -155,6 +158,173 @@ export const U3Key: React.FC = () => {
       <Place x={1110} y={groundY} s={s}>
         <Mil pose={milPose} outfit="medieval" view="back" holdB={<WoodSword />} />
       </Place>
+    </g>
+  );
+};
+
+// ====================================================================== animation
+// t = secondes depuis le début de l'univers 3. Caméra derrière eux ; ils filent vers le château.
+// Temps 15 (break) : ils se retournent et sautent vers la caméra, tout se fige jusqu'au DROP.
+
+const U3 = {
+  roar: ev('u3_roar') - SEC.u3,
+  fwoosh: ev('u3_fwoosh') - SEC.u3,
+  impact: ev('u3_impact') - SEC.u3,
+  log: ev('u3_log_jump') - SEC.u3,
+  jump: ev('u3_jump_cam') - SEC.u3,
+  brk: SEC.brk - SEC.u3,
+  end: SEC.u4 - SEC.u3,
+};
+
+/** Course vue de dos : une jambe d'appui, l'autre talon relevé. */
+const backRun = (ph: number, base: Partial<Pose> = {}): Pose => {
+  const s = Math.sin(ph * Math.PI * 2);
+  const c = Math.cos(ph * Math.PI * 2);
+  const wA = Math.max(0, -s);
+  const wB = Math.max(0, s);
+  return pose({
+    hipA: lerp(-6, -18, wA),
+    kneeA: lerp(4, -138, wA),
+    footA: lerp(0, -150, wA),
+    hipB: lerp(6, 16, wB),
+    kneeB: lerp(-4, 140, wB),
+    footB: lerp(0, 150, wB),
+    shA: -36 - 22 * s,
+    elA: -40,
+    shB: 36 - 22 * s,
+    elB: 40,
+    handA: 'fist',
+    handB: 'fist',
+    bob: -10 * Math.abs(c),
+    lean: 3 * s,
+    ...base,
+  });
+};
+
+const Flames: React.FC<{ x: number; y: number; k: number }> = ({ x, y, k }) =>
+  k > 0 ? (
+    <g transform={`translate(${x} ${y}) scale(${0.4 + 0.8 * (1 - k)})`} opacity={k}>
+      {[-60, -20, 25, 60].map((dx, i) => (
+        <g key={i} transform={`translate(${dx} 0) scale(${0.8 + (i % 2) * 0.4})`}>
+          <path d="M-26 0 C-40 -40 -14 -70 0 -110 C14 -70 40 -40 26 0 Z" fill="#ff8a1f" stroke={INK} strokeWidth={5} strokeLinejoin="round" />
+          <path d="M-12 0 C-18 -26 -6 -40 0 -64 C8 -40 18 -26 12 0 Z" fill="#ffe14d" />
+        </g>
+      ))}
+      <ellipse cx={0} cy={6} rx={110} ry={18} fill="#00000040" />
+    </g>
+  ) : null;
+
+/** Arcs blancs autour du perso pendant le demi-tour. */
+const SpinArcs: React.FC<{ k: number }> = ({ k }) => (
+  <g opacity={k} fill="none" stroke="#ffffff" strokeWidth={9} strokeLinecap="round">
+    <path d="M-130 -300 C-150 -250 -150 -190 -120 -150" />
+    <path d="M130 -280 C150 -230 150 -170 120 -130" />
+    <path d="M-110 -120 C-60 -90 60 -90 110 -120" />
+  </g>
+);
+
+export const U3Scene: React.FC<{ t: number }> = ({ t: tIn }) => {
+  const frozen = tIn >= U3.brk;
+  const t = Math.min(tIn, U3.brk); // gel pendant le break
+  const run = t * 1.6;
+  const ph = t / BEAT;
+  const groundY = 1010;
+  const s0 = 0.8;
+
+  // esquive de la boule de feu : ils s'écartent
+  const dodge = Math.sin(Math.PI * seg(t, 0.62, 1.05));
+  // saut par-dessus le tronc
+  const airK = hop(t, U3.log - 0.07, U3.log + 0.23, 70);
+  const airM = hop(t, U3.log - 0.04, U3.log + 0.26, 70);
+  // retournement + saut vers la caméra
+  const turn = seg(t, U3.jump - 0.06, U3.jump + 0.06); // 0 -> 1
+  const toCam = easeOut(seg(t, U3.jump - 0.06, U3.brk));
+  const jumpAir = hop(t, U3.jump - 0.06, U3.brk + 0.6, 200);
+  const view: 'back' | 'front' = turn < 0.5 ? 'back' : 'front';
+  // demi-tour cartoon : compression horizontale limitée (jamais une simple « tranche ») + arcs de vitesse
+  const flipX = turn <= 0 ? 1 : turn < 0.5 ? 1 - turn * 1.2 : 0.4 + (turn - 0.5) * 1.2;
+  const spin = turn > 0 && turn < 1 ? Math.sin(Math.PI * turn) : 0;
+
+  const kx = 820 - 70 * dodge - 110 * toCam;
+  const mx = 1110 + 70 * dodge + 110 * toCam;
+  const s = lerp(s0, 1.22, toCam);
+
+  const kPose: Pose =
+    view === 'back'
+      ? backRun(ph, { shA: -40 - 10 * Math.sin(ph * 6.28), elA: -30 })
+      : pose({ hipA: -38, kneeA: 50, hipB: 34, kneeB: -56, shA: -140, elA: -20, shB: 120, elB: 30, handA: 'open', handB: 'open', head: -6 });
+  const mPose: Pose =
+    view === 'back'
+      ? backRun(ph + 0.5, { shB: 150 + 12 * Math.sin(ph * 6.28 + 1), elB: 8 })
+      : pose({ hipA: -30, kneeA: 56, hipB: 40, kneeB: -48, shA: -128, elA: -24, shB: 150, elB: 10, handA: 'open', handB: 'fist', head: 6 });
+
+  // dragon : entre en piqué, rugit, crache, se rapproche
+  const dIn = easeOut(seg(t, 0.02, 0.36));
+  const dragonX = lerp(1780, 1300, dIn) + keys(t, [[1.0, 0], [1.8, -120]]);
+  const dragonY = lerp(-360, 330, dIn) + Math.sin(t * 5) * 10 + keys(t, [[1.0, 0], [1.8, -60]]);
+  const dragonS = 0.85 * keys(t, [[1.0, 1], [1.8, 1.18]]);
+  const jaw = Math.max(keys(t, [[U3.roar - 0.05, 0.2], [U3.roar, 1], [U3.roar + 0.25, 0.3]]), keys(t, [[U3.fwoosh - 0.08, 0.3], [U3.fwoosh, 1.1], [U3.fwoosh + 0.25, 0.3]]), t > 1.6 ? 1 : 0.2);
+  const wing = Math.sin(t * 13);
+  // bouche (repère dragon -> écran)
+  const mouth: Pt = [dragonX + -117 * (dragonS / 0.85), dragonY - 33 * (dragonS / 0.85)];
+  // boule de feu
+  const fbU = seg(t, U3.fwoosh, U3.impact);
+  const impact: Pt = [965, 960];
+  const fb: Pt = [lerp(mouth[0], impact[0], fbU), lerp(mouth[1], impact[1], easeIn(fbU) * 0.6 + fbU * 0.4)];
+  const fbAngle = (Math.atan2(impact[1] - mouth[1], impact[0] - mouth[0]) * 180) / Math.PI + 180;
+
+  // tronc : arrive vers eux en perspective
+  const logZ = lerp(0.5, 0.036, t / (U3.log + 0.1));
+  const [lx, ly, lk] = persp(-10, logZ);
+  const logEl = logZ > -0.12 ? <Log x={lx} y={ly} s={lk * 1.18} /> : null;
+  const logInFront = logZ < 0.036;
+
+  const grrr = popIn(t, U3.roar, 0.2) * (1 - seg(t, 0.62, 0.75));
+  const fwoosh = popIn(t, U3.fwoosh, 0.2) * (1 - seg(t, 1.05, 1.2));
+  const zoom = frozen ? 1 + 0.05 * easeOut(seg(tIn, U3.brk, U3.end)) : 1;
+
+  const krokEl = (
+    <Krok pose={kPose} outfit="medieval" view={view} expression={view === 'front' ? 'surprised' : 'base'} holdA={<WoodShield back={view === 'back'} emblem={KROK.identity} />} armsOverHead={view === 'front'} />
+  );
+  const milEl = <Mil pose={mPose} outfit="medieval" view={view} expression={view === 'front' ? 'surprised' : 'base'} holdB={<WoodSword />} armsOverHead={view === 'front'} />;
+
+  return (
+    <g transform={`translate(${W / 2} ${H / 2}) scale(${zoom}) translate(${-W / 2} ${-H / 2})`}>
+      <U3Background t={t + 5} run={run} />
+      {!logInFront && logEl}
+      <Flames x={impact[0]} y={impact[1] + 40 * seg(t, U3.impact, U3.impact + 0.4)} k={t >= U3.impact ? 1 - seg(t, U3.impact, U3.impact + 0.4) : 0} />
+      <g transform={`translate(${dragonX} ${dragonY}) scale(${dragonS})`}>
+        <Dragon wing={wing} jaw={jaw} />
+      </g>
+      {t >= U3.fwoosh && t < U3.impact && (
+        <g transform={`translate(${fb[0]} ${fb[1]}) rotate(${fbAngle}) scale(${0.6 + 0.6 * fbU})`}>
+          <Fireball r={56} t={t} />
+        </g>
+      )}
+      <GroundShadow x={kx} y={groundY + 6} w={90 * s} air={airK + jumpAir} />
+      <GroundShadow x={mx} y={groundY + 6} w={80 * s} air={airM + jumpAir} />
+      <Place x={kx} y={groundY - airK - jumpAir} s={s}>
+        <g transform={`scale(${flipX} 1)`}>{krokEl}</g>
+        {spin > 0 && <SpinArcs k={spin} />}
+      </Place>
+      <Place x={mx} y={groundY - airM - jumpAir} s={s}>
+        <g transform={`scale(${flipX} 1)`}>{milEl}</g>
+        {spin > 0 && <SpinArcs k={spin} />}
+      </Place>
+      {logInFront && logEl}
+      {grrr > 0 && <Onomatopoeia text="GRRR" x={1030} y={150} size={100} rotate={6} scale={grrr} fill="#ff7a4a" fill2="#c9381f" />}
+      {fwoosh > 0 && <Onomatopoeia text="FWOOSH !" x={1560} y={690} size={110} rotate={-8} scale={fwoosh} fill="#ffd23f" fill2="#ff7a1a" />}
+      {frozen && (
+        <>
+          <defs>
+            <radialGradient id="u3vig" cx="50%" cy="50%" r="70%">
+              <stop offset="0.55" stopColor="#1a0f2a" stopOpacity={0} />
+              <stop offset="1" stopColor="#1a0f2a" stopOpacity={0.55} />
+            </radialGradient>
+          </defs>
+          <rect x={0} y={0} width={W} height={H} fill="url(#u3vig)" opacity={easeOut(seg(tIn, U3.brk, U3.brk + 0.15))} />
+        </>
+      )}
     </g>
   );
 };

@@ -9,7 +9,8 @@
     "noEmit": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
     "lib": ["DOM", "ES2020"]
   },
-  "include": ["src", "remotion.config.ts"]
+  "include": ["src", "remotion.config.ts", "timeline.json"]
 }

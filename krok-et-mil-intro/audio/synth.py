@@ -167,6 +167,8 @@ class Track:
         self.buf = np.zeros((int(round(dur * SR)), 2))
 
     def add(self, t, sound, gain=1.0, p=0.0):
+        if t is None:  # section absente de cette version
+            return
         if sound.ndim == 1:
             sound = pan(sound, p)
         i = int(round(t * SR))

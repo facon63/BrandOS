@@ -5,6 +5,8 @@ import { INK } from '../palette';
 import { Krok } from '../rig/Krok';
 import { Mil } from '../rig/Mil';
 import { pose } from '../rig/pose';
+import { easeOut, keys, lerp, popIn, seg, wobble } from '../anim';
+import { ev, SEC } from '../timeline';
 import { Cloud, GroundShadow, H, Place, rand, SkyGradient, W } from './common';
 
 // Univers 4 : conclusion calme, coucher de soleil pastel, lucioles. DROP à 7,5 s puis logo.
@@ -78,6 +80,73 @@ export const U4Key: React.FC = () => {
       <SighBubble x={640} y={470} s={0.9} />
       <g transform="translate(960 190) scale(0.9)">
         <Logo t={2} />
+      </g>
+    </g>
+  );
+};
+
+// ====================================================================== animation
+// t = secondes depuis le DROP (7,5 s). Atterrissage sur le drop, lent zoom arrière, « ouf »,
+// retour du regard blasé de Mil, high-five discret sur l'accord final, logo lettre par lettre.
+
+const U4 = {
+  logo: ev('logo_0') - SEC.u4,
+  five: ev('u4_highfive') - SEC.u4,
+};
+
+export const U4Scene: React.FC<{ t: number }> = ({ t }) => {
+  const s = 0.92;
+  const groundY = 900;
+  const zoom = lerp(1.22, 1, easeOut(seg(t, 0, 2.4)));
+  const drift = lerp(40, 0, easeOut(seg(t, 0, 2.4))); // la caméra descend doucement avec eux
+  const land = 1 - 0.24 * (1 - seg(t, 0, 0.16)) + wobble(t, 0.12, 0.07, 16, 8);
+  const breath = Math.sin(t * 3) * 1.5;
+  // high-five : le bras se plie d'abord (avant-bras vers le haut) puis se tend, et redescend par le même chemin
+  const raise = keys(t, [
+    [U4.five - 0.3, 0],
+    [U4.five - 0.17, 0.5],
+    [U4.five - 0.04, 1],
+    [U4.five + 0.38, 1],
+    [U4.five + 0.52, 0.5],
+    [U4.five + 0.68, 0],
+  ]);
+  const arm = (r: number, rest: [number, number], mid: [number, number], top: [number, number]): [number, number] =>
+    r < 0.5 ? [lerp(rest[0], mid[0], r * 2), lerp(rest[1], mid[1], r * 2)] : [lerp(mid[0], top[0], r * 2 - 1), lerp(mid[1], top[1], r * 2 - 1)];
+  const [kSh, kEl] = arm(raise, [1, 1], [90, 90], [165, -10]);
+  const [mSh, mEl] = arm(raise, [-3, 2], [-90, -90], [-120, -60]);
+  const kPose = pose({ hipA: -8, kneeA: 2, hipB: 2, kneeB: -1, shA: 6, elA: -4, shB: kSh, elB: kEl, handA: 'relaxed', handB: raise > 0.3 ? 'open' : 'relaxed', head: 4, lean: 2, bob: breath });
+  const mPose = pose({ hipA: -4, kneeA: 1, hipB: 4, kneeB: -1, shA: mSh, elA: mEl, shB: 3, elB: -2, handA: raise > 0.3 ? 'open' : 'relaxed', handB: 'relaxed', head: -3, lean: -2, bob: breath * 0.8 });
+  const krokExpr = t < 0.3 ? 'surprised' : 'happy';
+  const milExpr = t < 0.42 ? 'surprised' : 'base'; // le regard blasé revient dès que ça se calme
+  const ouf = popIn(t, 0.4, 0.22) * (1 - seg(t, 1.25, 1.45));
+  const clap = t >= U4.five && t < U4.five + 0.3 ? 1 - seg(t, U4.five, U4.five + 0.3) : 0;
+  return (
+    <g>
+      <g transform={`translate(0 ${drift}) translate(960 760) scale(${zoom}) translate(-960 -760)`}>
+        <U4Background t={t + 7.5} />
+        <GroundShadow x={880} y={groundY + 6} w={110} />
+        <GroundShadow x={1060} y={groundY + 6} w={90} />
+        <Place x={880} y={groundY} s={s}>
+          <g transform={`scale(${1 / Math.sqrt(land)} ${land})`}>
+            <Krok pose={kPose} expression={krokExpr} />
+          </g>
+        </Place>
+        <Place x={1062} y={groundY} s={s}>
+          <g transform={`scale(${1 / Math.sqrt(land)} ${land})`}>
+            <Mil pose={mPose} expression={milExpr} />
+          </g>
+        </Place>
+        {clap > 0 && (
+          <g transform={`translate(978 540) scale(${0.8 + 0.6 * (1 - clap)})`} opacity={clap}>
+            {[0, 1, 2, 3, 4].map((i) => (
+              <path key={i} d="M0 -34 L0 -54" transform={`rotate(${-60 + i * 30})`} stroke="#ffffff" strokeWidth={6} strokeLinecap="round" />
+            ))}
+          </g>
+        )}
+        {ouf > 0 && <SighBubble x={640} y={470} s={0.9 * ouf} />}
+      </g>
+      <g transform="translate(960 190) scale(0.9)">
+        <Logo t={t - U4.logo} />
       </g>
     </g>
   );

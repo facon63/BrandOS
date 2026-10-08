@@ -45,8 +45,14 @@ const pop = (t: number) => {
   return { s: e, sx: 1 + wob * 0.28, sy: 1 - wob * 0.28, dy: -80 * (1 - e) };
 };
 
+/** Décalage entre deux lettres (s) et durée du rebond d'une lettre (s) — calés sur les SFX « logo_i » de timeline.json. */
+export const LETTER_STAGGER = 0.0586;
+export const LETTER_DUR = 0.45;
+/** Instant (relatif au début du logo) où le logo est complet et stable. */
+export const LOGO_COMPLETE = 8 * LETTER_STAGGER + LETTER_DUR;
+
 /**
- * `t` : secondes depuis le début de l'apparition (>= 1,2 s : logo complet et stable).
+ * `t` : secondes depuis l'apparition de la première lettre.
  * Coordonnées : centré en (0,0), largeur ≈ LOGO_WIDTH, hauteur ≈ 260.
  */
 export const Logo: React.FC<{ t?: number; sparkle?: boolean }> = ({ t = 10, sparkle = true }) => {
@@ -55,7 +61,7 @@ export const Logo: React.FC<{ t?: number; sparkle?: boolean }> = ({ t = 10, spar
   return (
     <g transform={`translate(${-width / 2} 0)`}>
       {letters.map((l, i) => {
-        const p = pop((t - i * 0.07) / 0.6);
+        const p = pop((t - i * LETTER_STAGGER) / LETTER_DUR);
         const size = l.big ? BIG : SMALL;
         const by = l.big ? base : base - 34;
         const cx = l.x + l.w / 2;
@@ -90,7 +96,7 @@ export const Logo: React.FC<{ t?: number; sparkle?: boolean }> = ({ t = 10, spar
           [width * 0.82, 110, 0.9, 0.7],
           [80, 120, 0.8, 0.85],
         ].map(([x, y, s, ph], i) => {
-          const tw = t - 0.9 - ph * 0.5;
+          const tw = t - LOGO_COMPLETE + 0.1 - ph * 0.5;
           if (tw < 0) return null;
           const k = 0.55 + 0.45 * Math.sin(tw * 9 + i);
           return (
