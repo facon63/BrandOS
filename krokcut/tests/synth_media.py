@@ -18,8 +18,9 @@ import numpy as np
 SR = 16000
 
 
-def _ffmpeg(*args: str) -> None:
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", *args], check=True)
+def _ffmpeg(*args: str, stdin: bytes | None = None) -> None:
+    head = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"] + ([] if stdin is not None else ["-nostdin"])
+    subprocess.run([*head, *args], check=True, input=stdin)
 
 
 def _codec_args(codec: str) -> list[str]:
@@ -546,3 +547,52 @@ def cached(key, build):
     if key not in _CACHE:
         _CACHE[key] = build()
     return _CACHE[key]
+
+
+def analyze_video(path: Path, out: Path, **kwargs) -> dict:
+    """vision.analyze_image puis relecture des fichiers écrits."""
+    import json
+
+    from krokcut import vision
+    from krokcut.ffmpeg_utils import probe
+
+    metrics = vision.analyze_image(path, out, probe(path), progress=lambda f, m: None, **kwargs)
+    return {
+        "metrics": metrics,
+        "plans": json.loads((out / "plans.json").read_text("utf-8")),
+        "events": json.loads((out / "image_evenements.json").read_text("utf-8"))["events"],
+        "out": out,
+    }
+
+
+def analyzed_montage(tmp_path_factory) -> tuple[Path, dict, dict]:
+    """Le faux montage 640×360 à 30 i/s et son analyse de l'image (une seule fois par session de tests)."""
+    import time
+
+    def build():
+        base = tmp_path_factory.mktemp("montage")
+        path, truth = edit_video(base / "src")
+        t0 = time.time()
+        res = analyze_video(path, base / "analyse")
+        res["seconds"] = time.time() - t0
+        return path, truth, res
+
+    return cached("montage_640p30", build)
+
+
+def color_of(k: int) -> tuple[int, int, int]:
+    """Couleur unie de l'image candidate k (assez distincte d'une image à l'autre, ni trop claire ni trop sombre)."""
+    return (40 + (k * 53) % 176, 40 + (k * 97) % 176, 40 + (k * 31) % 176)
+
+
+def color_candidates(work: Path, seconds: float, w: int = 640, h: int = 360) -> int:
+    """images4/ synthétique : une image unie par candidate (k / 4 s), de couleur color_of(k). Renvoie leur nombre."""
+    n = int(seconds * 4) + 1
+    d = work / "images4"
+    d.mkdir(parents=True, exist_ok=True)
+    frames = np.empty((n, h, w, 3), np.uint8)
+    for k in range(n):
+        frames[k] = color_of(k)
+    _ffmpeg("-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", "4", "-i", "-",  # une entrée sur stdin
+            "-q:v", "2", "-start_number", "0", str(d / "f_%06d.jpg"), stdin=frames.tobytes())
+    return n

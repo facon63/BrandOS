@@ -60,26 +60,12 @@ EVENTS_SCHEMA = {
 }
 
 
-def _analyze(path, out, **kwargs) -> dict:
-    metrics = vision.analyze_image(path, out, probe(path), progress=lambda f, m: None, **kwargs)
-    return {
-        "metrics": metrics,
-        "plans": json.loads((out / "plans.json").read_text("utf-8")),
-        "events": json.loads((out / "image_evenements.json").read_text("utf-8"))["events"],
-        "out": out,
-    }
+_analyze = sm.analyze_video
 
 
 @pytest.fixture(scope="session")
 def montage(tmp_path_factory):
-    def build():
-        base = tmp_path_factory.mktemp("montage")
-        path, truth = sm.edit_video(base / "src")
-        t0 = time.time()
-        res = _analyze(path, base / "analyse")
-        res["seconds"] = time.time() - t0
-        return path, truth, res
-    return sm.cached("montage_640p30", build)
+    return sm.analyzed_montage(tmp_path_factory)
 
 
 @pytest.fixture(scope="session")
