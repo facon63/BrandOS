@@ -390,9 +390,7 @@ def _removable(tile: dict) -> str:
     reasons = set(tile["reasons"])
     if reasons & set(PROTECTED_REASONS):
         return ""
-    if reasons <= {"grille"}:
-        return "grille"
-    return "son"
+    return "son" if reasons & set(SOUND_REASONS) else "grille"
 
 
 def _apply_cap(tiles: list[dict], duration: float, per_min: int) -> list[dict]:
@@ -566,10 +564,6 @@ def compose_sheet(tiles: list[dict], images: np.ndarray, preset: Preset) -> np.n
         if tile.get("new_plan"):
             sheet[iy : iy + preset.tile_h, x : x + NEW_PLAN_EDGE] = 255
     return sheet
-
-
-def candidate_path(work: Path, t: float) -> Path:
-    return Path(work) / CANDIDATE_DIR / f"f_{int(round(t * CANDIDATE_FPS)):06d}.jpg"
 
 
 def _tile_images(tiles: list[dict], work: Path, preset: Preset) -> np.ndarray:
