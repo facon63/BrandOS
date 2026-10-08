@@ -6,7 +6,6 @@ import contextlib
 import json
 import math
 import subprocess
-import time
 
 import numpy as np
 import pytest

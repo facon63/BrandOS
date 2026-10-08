@@ -318,10 +318,10 @@ def test_dimensions_jetons_et_taille_par_qualite(tmp_path_factory):
     r = lambda name: json.loads((out / name).read_text("utf-8"))  # noqa: E731
     expected = {"eco": (2324, 1424, 4413), "standard": (2256, 1396, 4200), "detaille": (2252, 1368, 4108)}
     for quality, (w, h, tokens) in expected.items():
-        calls = []
+        calls: list[float] = []
         data = sheets.build_sheets(path, out, quality=quality, duration=50.0, plans=r("plans.json"),
                                    image_events=r("image_evenements.json"), sound_events={}, music={}, silences={},
-                                   words=truth["words"], progress=lambda f, m: calls.append(f))
+                                   words=truth["words"], progress=lambda f, m, seen=calls: seen.append(f))
         Draft202012Validator(PLANCHES_SCHEMA).validate(data)
         assert calls[0] == 0 and calls[-1] == 1 and calls == sorted(calls)
         preset = sheets.PRESETS[quality]

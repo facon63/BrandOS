@@ -14,9 +14,7 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import statistics
-import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -1513,19 +1511,22 @@ def rhythm_windows(duration: float, cuts: list[float], visual_events: list[dict]
     while t0 < duration - 1e-6:
         t1 = min(duration, t0 + RHYTHM_WIN_S)
         minutes = max((t1 - t0) / 60, 1e-6)
-        count = lambda ts: sum(1 for t in ts if t0 <= t < t1)  # noqa: E731
         sp = speech[int(t0 * FPS) : int(t1 * FPS)]
         m = [v for v in m_vals[int(t0 / R128_HOP) : int(t1 / R128_HOP)] if v > SHORTTERM_FLOOR]
         out.append({
             "t0": round(t0, 1),
-            "cuts_per_min": round(count(cuts) / minutes, 1),
-            "zooms_per_min": round(count(v["t"] for v in visual_events if v.get("type") == "zoom") / minutes, 1),
-            "sounds_per_min": round(count(s["t"] for s in sounds) / minutes, 1),
+            "cuts_per_min": round(_count(cuts, t0, t1) / minutes, 1),
+            "zooms_per_min": round(_count([v["t"] for v in visual_events if v.get("type") == "zoom"], t0, t1) / minutes, 1),
+            "sounds_per_min": round(_count([s["t"] for s in sounds], t0, t1) / minutes, 1),
             "speech_share": round(float(sp.mean()) if len(sp) else 0.0, 2),
             "loudness_m": round(float(np.mean(m)), 1) if m else None,
         })
         t0 += RHYTHM_WIN_S
     return out
+
+
+def _count(times, t0: float, t1: float) -> int:
+    return sum(1 for t in times if t0 <= t < t1)
 
 
 def _write_json(path: Path, data) -> None:

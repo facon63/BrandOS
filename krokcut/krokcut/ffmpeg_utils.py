@@ -9,6 +9,7 @@ from __future__ import annotations
 import collections
 import json
 import os
+import queue
 import re
 import subprocess
 import sys
@@ -410,6 +411,8 @@ def concat_listing(files: Sequence[str | Path], listing: Path) -> None:
 
 # ------------------------------------------------------------- images brutes (numpy)
 STDERR_TAIL_LINES = 40
+PREFETCH_BLOCKS = 2  # blocs lus d'avance pendant que le consommateur calcule
+_STREAM_END = object()
 _PROGRESS_KEY = re.compile(r"^[a-z_0-9]+=")  # lignes de -progress, à ne pas confondre avec les erreurs
 
 
@@ -458,29 +461,61 @@ def stream_raw_frames(
 
     reader = threading.Thread(target=drain, daemon=True)
     reader.start()
-    assert proc.stdout is not None
+    # Lecture du tube dans un fil à part, quelques blocs d'avance : ffmpeg décode pendant que le
+    # consommateur calcule (sinon les deux s'attendent, le tube ne tenant que 64 Ko).
+    blocks: queue.Queue = queue.Queue(maxsize=PREFETCH_BLOCKS)
+    stop = threading.Event()
+
+    def put(item) -> None:
+        while not stop.is_set():
+            try:
+                blocks.put(item, timeout=0.1)
+                return
+            except queue.Full:
+                continue
+
+    def pump() -> None:
+        assert proc.stdout is not None
+        try:
+            while not stop.is_set():
+                buf = np.empty(block * frame_bytes, dtype=np.uint8)
+                view = memoryview(buf)
+                got = 0
+                while got < len(buf):
+                    n = proc.stdout.readinto(view[got:])
+                    if not n:
+                        break
+                    got += n
+                frames = got // frame_bytes
+                if frames:
+                    put(buf[: frames * frame_bytes].reshape(frames, h, w, c))
+                if got < len(buf):
+                    break
+        except Exception as exc:  # tube fermé (ffmpeg tué) ou erreur de lecture
+            put(exc)
+        finally:
+            put(_STREAM_END)
+
+    feeder = threading.Thread(target=pump, daemon=True)
+    feeder.start()
     try:
         while True:
-            buf = np.empty(block * frame_bytes, dtype=np.uint8)
-            view = memoryview(buf)
-            got = 0
-            while got < len(buf):
-                n = proc.stdout.readinto(view[got:])
-                if not n:
-                    break
-                got += n
-            frames = got // frame_bytes
-            if frames:
-                yield buf[: frames * frame_bytes].reshape(frames, h, w, c)
+            item = blocks.get()
+            if item is _STREAM_END:
+                break
+            if isinstance(item, BaseException):
+                raise item
+            yield item
             if on_progress and duration:
                 on_progress(min(1.0, out_time[0] / duration))
-            if got < len(buf):
-                break
     except BaseException:  # annulation, erreur du consommateur, close() : on ne laisse pas ffmpeg tourner
+        stop.set()
         proc.kill()
         proc.wait()
+        feeder.join(timeout=5)
         reader.join(timeout=5)
         raise
+    feeder.join(timeout=5)
     code = proc.wait()
     reader.join(timeout=5)
     if code != 0:
