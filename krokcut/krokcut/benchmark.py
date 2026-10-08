@@ -1641,7 +1641,7 @@ def measures_profile(doc: BenchDoc) -> dict:
         rules.append(f"Musique de fond détectée {fr(m['music_pct'], 0)} % du temps.")
     if m.get("flashes_per_min"):
         rules.append(f"Flashs : {fr(m['flashes_per_min'])} par minute.")
-    if m.get("pause_p90") is not None:
+    if m.get("pause_p90"):  # 0 : pas de blanc mesuré entre deux mots
         rules.append(f"Blancs entre les mots : 90 % font moins de {fr(m['pause_p90'], 2)} s.")
     if m.get("loudness_i") is not None:
         rules.append(f"Volume : {fr(m['loudness_i'])} LUFS.")
