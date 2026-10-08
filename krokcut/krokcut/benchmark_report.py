@@ -149,6 +149,18 @@ ROWS: list[tuple[str, str, str, str, str, str, str]] = [
 ]
 ROW_BY_ID = {r[0]: r for r in ROWS}
 MUSIC_NOTE = "une nappe sans rythme sous la voix peut être manquée : 0 % veut dire « pas détectée »"
+# Mesures qui n'existent que s'il y a quelque chose à mesurer : sans zoom, pas de grossissement ; sans
+# musique, pas de niveau de musique. Les modules de mesure écrivent alors 0, qui veut dire « pas mesuré » et
+# ne doit compter ni dans les médianes ni dans les réglages proposés (un grossissement de 0 tirerait
+# punch_scale vers le bas, un niveau de musique de 0 dB le tirerait vers le haut).
+DEFINED_IF = {  # métrique -> compte qui doit être non nul pour qu'elle ait un sens
+    "zoom_scale_median": "punch_ins",
+    "zoom_hold_median_s": "punch_ins",
+    "music_bpm_median": "music_segments",
+    "music_level_vs_voice_db": "music_segments",
+    "sound_level_vs_voice_db": "sound_events_per_min",
+}
+ZERO_IS_UNKNOWN = {"zoom_scale_median", "zoom_hold_median_s", "music_bpm_median", "pause_p50", "pause_p90", "reaction_tail_median"}
 
 # Réglages proposés : (champ, métriques par ordre de préférence, règle, bornes, arrondi, libellé)
 FIELDS: list[tuple[str, tuple[str, ...], str, tuple[float, float], str, str]] = [
@@ -291,7 +303,12 @@ def base_and_targets(store: BenchmarkStore, settings: BenchSettings, cfg: AppCon
 
 
 # ------------------------------------------------------------------ tableau
-def _metric(doc: BenchDoc, key: str, study: Study | None = None):
+def _number(value) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _metric(doc: BenchDoc, key: str):
+    """Valeur d'une ligne du tableau pour une vidéo ; None si elle n'est pas mesurée (ou pas mesurable)."""
     m = doc.state.metrics
     if key.startswith("sound_by_cat."):
         cats = m.get("sound_by_cat")
@@ -299,8 +316,14 @@ def _metric(doc: BenchDoc, key: str, study: Study | None = None):
     if key == "teaser_pct":
         teaser = ((doc.read_json("profil.json") or {}).get("accroche") or {}).get("teaser")
         return {"oui": 100.0, "non": 0.0}.get(teaser)
-    value = m.get(key)
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    value = _number(m.get(key))
+    if value is None:
+        return None
+    if key in DEFINED_IF and not _number(m.get(DEFINED_IF[key])):
+        return None
+    if key in ZERO_IS_UNKNOWN and value <= 0:
+        return None
+    return value
 
 
 def _summary(values: list[float]) -> dict:

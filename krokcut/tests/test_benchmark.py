@@ -654,7 +654,7 @@ def hand_doc(store, name, *, duration=60.0, channel="wankil-studio") -> BenchDoc
     src.write_bytes(name.encode() * 1000)
     doc, _ = store.add_or_get(src, channel)
     doc.state.metrics.update(duration_s=duration, duration_min=round(duration / 60, 1))
-    doc.state.instrument.update(sheets=1, quality="standard", observe=1, model="claude-opus-5-5")
+    doc.state.instrument.update(sheets=1, quality="standard", observe=1, model=AppConfig.load().model)
     doc.save()
     tiles = [{"id": f"T{k + 1:04d}", "t": k + 0.5, "plan": "P001", "sheet": k // 30, "cell": k % 30, "chunk": k // 30} for k in range(int(duration))]
     doc.write_json("planches.json", {"tiles": tiles, "sheets": [], "chunks": [{"n": 0, "t0": 0, "t1": 30, "sheets": [0]}, {"n": 1, "t0": 30, "t1": 60, "sheets": [1]}]})
@@ -1196,3 +1196,97 @@ def test_report_outdated_when_a_video_moves(workspace, claude):
     store.move(w.id, "club-pungouin")
     assert br.report_status(store, cfg)["outdated"]
     assert br.live_report(store, cfg)["outdated"]
+
+
+def test_unmeasurable_values_are_unknown_not_zero(workspace):
+    """Sans zoom, sans musique, sans son marquant : 0 veut dire « pas mesuré » (ni médiane, ni réglage)."""
+    cfg = AppConfig.load()
+    store = BenchmarkStore()
+    for k in range(2):
+        fake_video(store, cfg, "wankil-studio", f"w{k}", {
+            "punch_ins": 30, "zoom_scale_median": 1.5, "music_segments": 2, "music_level_vs_voice_db": -18.0,
+            "music_pct": 60.0, "sound_events_per_min": 8.0, "sound_level_vs_voice_db": 2.0, "pause_p90": 0.7})
+        fake_video(store, cfg, "krok-et-mil", f"k{k}", {
+            "punch_ins": 0, "zoom_scale_median": 0.0, "music_segments": 0, "music_level_vs_voice_db": 0.0,
+            "music_pct": 0.0, "sound_events_per_min": 0.0, "sound_level_vs_voice_db": 0.0, "pause_p90": 0.0})
+    table = {r["id"]: r for r in br.metrics_table(store, cfg)}
+    for rid in ("zoom_scale_median", "music_level_vs_voice_db", "sound_level_vs_voice_db", "pause_p90"):
+        assert "krok-et-mil" not in table[rid]["values"] and table[rid]["values"]["wankil-studio"]["n"] == 2, rid
+    assert table["music_pct"]["values"]["krok-et-mil"]["median"] == 0.0  # 0 % de musique, lui, est une mesure
+    props = {p["field"] for p in br.live_report(store, cfg)["proposals"]}
+    assert not props & {"punch_scale", "sfx_volume_db", "music_volume_db", "max_silence"}
+    assert "music" in props  # « mettre de la musique » reste proposé
+
+
+def test_key_added_after_measures_only(workspace, media, claude, monkeypatch):
+    """Mesurée sans clé (« mesures seules ») : une fois la clé ajoutée, Claude se lance sans rien remesurer."""
+    cfg = AppConfig.load()
+    store = BenchmarkStore()
+    doc, _ = store.add_or_get(media["wankil"], "wankil-studio")
+    assert analyzer(store, doc, cfg).run()
+    doc = store.open(doc.id)
+    assert doc.state.steps["observe"].status == "skipped"
+    assert benchmark.video_summary(doc, None, "", store.settings(), cfg)["status"] == "mesures_seules"
+    assert benchmark.pending_claude(store, cfg)["count"] == 0
+    with_key(monkeypatch)
+    assert benchmark.video_summary(doc, None, "", store.settings(), cfg)["status"] == "pret_claude"
+    assert benchmark.pending_claude(store, cfg)["ids"] == [doc.id]
+    approve_claude(doc)
+    assert benchmark.startup_plan(store, cfg) == [(doc.id, None)]  # validée puis KrokCut fermé : reprise au démarrage
+    fake_media = {name: sys.modules[f"krokcut.{name}"] for name in ("vision", "soundscan")}
+    fake_media["vision"].fail = True  # rien n'est remesuré
+    assert analyzer(store, doc, cfg).run(), store.open(doc.id).state.last_error
+    doc = store.open(doc.id)
+    assert doc.state.steps["observe"].status == "done" and doc.read_json("profil.json")["source"] == "claude"
+    assert claude.labels("video") == ["video"] and len(claude.labels("observe_")) == chunk_count(doc)
+    assert benchmark.video_summary(doc, None, "", store.settings(), cfg)["status"] == "analysee"
+
+
+def test_move_while_running_is_kept(workspace, media):
+    """« Déplacer vers… » pendant les mesures : le traitement en cours n'écrase pas la nouvelle chaîne."""
+    store = BenchmarkStore()
+    doc, _ = store.add_or_get(media["club"], "wankil-studio")
+    running = store.open(doc.id)  # l'état gardé en mémoire par le traitement
+    store.move(doc.id, "club-pungouin")
+    running.set_step("probe", status="running")
+    running.set_metrics(duration_s=40.0)
+    disk = store.open(doc.id)
+    assert disk.state.channel == "club-pungouin" and disk.state.steps["probe"].status == "running"
+    assert disk.state.metrics["duration_s"] == 40.0 and running.state.channel == "club-pungouin"
+    with pytest.raises(KeyError):
+        store.move(doc.id, "inconnue")
+    with pytest.raises(ValueError):
+        disk.edit(name="autre")  # seuls la chaîne et la propriété du fichier se changent ainsi
+
+
+def test_move_out_of_my_videos_without_hard_link(workspace, media, monkeypatch):
+    """Lien dur impossible (autre disque) : la comparaison garde la copie de « Mes vidéos » et l'efface avec elle."""
+    cfg = AppConfig.load()
+    store = BenchmarkStore()
+    refs = ReferenceStore()
+    copy = refs.files_dir / "wankil_episode.mp4"
+    shutil.copy(media["wankil"], copy)
+    ref = refs.add(copy)
+    assert ref.state.copied
+
+    def no_link(src, dst):
+        raise OSError("lien dur impossible")
+
+    monkeypatch.setattr(benchmark.os, "link", no_link)
+    doc, created = store.import_reference(ref, cfg, channel="wankil-studio")  # d'abord sans déplacer
+    assert created and not doc.state.copied and Path(doc.state.path) == copy.resolve()
+    doc2, created2 = store.import_reference(refs.open(ref.id), cfg, channel="wankil-studio", move=True)
+    assert not created2 and doc2.id == doc.id
+    assert ref.id not in [r.id for r in ReferenceStore().list()] and copy.exists()  # le fichier reste
+    doc = store.open(doc.id)
+    assert doc.state.copied
+    store.remove(doc.id)
+    assert not copy.exists()  # plus personne ne s'en sert : effacé avec la vidéo de comparaison
+    # Un fichier de « Mes vidéos » encore utilisé par une référence n'est jamais effacé
+    other = refs.files_dir / "club_episode.mp4"
+    shutil.copy(media["club"], other)
+    ref2 = refs.add(other)
+    doc3, _ = store.import_reference(ref2, cfg)
+    doc3.edit(copied=True)
+    store.remove(doc3.id)
+    assert other.exists() and refs.open(ref2.id)

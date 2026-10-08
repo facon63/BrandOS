@@ -208,6 +208,12 @@ class BenchState(BaseModel):
     coverage: float = 0.0  # part de la durée réellement regardée par Claude
     failed_chunks: list[int] = []
     last_error: str = ""
+    edits: int = 0  # changements faits depuis l'interface (chaîne…) : un traitement en cours ne les écrase pas
+
+
+# Champs changés depuis l'interface, éventuellement pendant qu'un traitement tourne sur la vidéo (« Déplacer
+# vers… » pendant les mesures) : le traitement, qui garde son propre état en mémoire, les reprend du disque.
+EDITABLE_FIELDS = ("channel", "copied")
 
 
 class BenchDoc(StepDoc):
@@ -220,6 +226,32 @@ class BenchDoc(StepDoc):
     @property
     def id(self) -> str:
         return self.state.id
+
+    def save(self) -> None:
+        with self._lock:
+            try:
+                disk = json.loads((self.root / self.STATE_FILE).read_text("utf-8"))
+            except (OSError, ValueError):
+                disk = {}
+            if int(disk.get("edits") or 0) > self.state.edits:  # modifiée ailleurs depuis notre lecture
+                for key in EDITABLE_FIELDS:
+                    if key in disk:
+                        setattr(self.state, key, disk[key])
+                self.state.edits = int(disk["edits"])
+            super().save()
+
+    def edit(self, **fields) -> None:
+        """Changement venu de l'interface : relu depuis le disque, appliqué, et jamais écrasé ensuite par un
+        traitement qui tournerait sur la vidéo."""
+        unknown = set(fields) - set(EDITABLE_FIELDS)
+        if unknown:
+            raise ValueError(f"Champs non modifiables : {', '.join(sorted(unknown))}")
+        with self._lock:
+            self.reload()
+            for key, value in fields.items():
+                setattr(self.state, key, value)
+            self.state.edits += 1
+            super().save()
 
     def set_metrics(self, **values) -> None:
         with self._lock:
@@ -481,25 +513,38 @@ class BenchmarkStore:
 
     def _detach_reference(self, ref: ReferenceDoc, doc: BenchDoc) -> None:
         """Retire la vidéo de « Mes vidéos », sans perdre le fichier dont dépend la comparaison."""
-        if ref.state.copied and Path(doc.state.path) == Path(ref.state.path).resolve():
-            ref.state.copied = False  # c'est désormais la comparaison qui l'utilise : ne pas l'effacer
+        if ref.state.copied and Path(doc.state.path).resolve() == Path(ref.state.path).resolve():
+            # La comparaison lit la copie faite par « Mes vidéos » (lien dur impossible à l'import) : elle en
+            # devient propriétaire (effacée avec la vidéo de comparaison), « Mes vidéos » ne l'efface pas.
+            ref.state.copied = False
             ref.save()
+            doc.edit(copied=True)
         ReferenceStore(ref.root.parent).remove(ref.id)
 
     def move(self, vid: str, channel: str) -> None:
+        """Vers une autre chaîne : rien à remesurer (le rapport devient seulement périmé)."""
         self.channel(channel)
-        doc = self.open(vid)
-        with doc._lock:
-            doc.state.channel = channel
-            doc.save()
+        self.open(vid).edit(channel=channel)
+
+    @property
+    def owned_dirs(self) -> tuple[Path, ...]:
+        """Dossiers dont KrokCut peut effacer les fichiers : ses copies, jamais les fichiers de l'utilisateur."""
+        return (self.files_dir.resolve(), (self.root.parent / "references" / "fichiers").resolve())
 
     def remove(self, vid: str) -> None:
         doc = self.open(vid)
         if doc.state.copied:
-            path = Path(doc.state.path)
-            if self.files_dir.resolve() in path.resolve().parents:
+            path = Path(doc.state.path).resolve()
+            mine, refs = self.owned_dirs
+            if mine in path.parents or (refs in path.parents and not self._used_by_reference(path)):
                 path.unlink(missing_ok=True)
         shutil.rmtree(doc.root, ignore_errors=True)
+
+    def _used_by_reference(self, path: Path) -> bool:
+        refs = self.root.parent / "references"
+        if not refs.is_dir():
+            return False
+        return any(Path(r.state.path).resolve() == path for r in ReferenceStore(refs).list())
 
 
 def _link_or_copy(src: Path, dst: Path) -> bool:
@@ -673,7 +718,7 @@ def startup_plan(store: BenchmarkStore, cfg: AppConfig) -> list[tuple[str, str |
             continue
         if any(st[s].status == "pending" for s in LOCAL_STEPS):
             plan.append((doc.id, "sheets"))
-        elif doc.state.claude_ok and any(st[s].status == "pending" for s in CLAUDE_STEPS):
+        elif doc.state.claude_ok and claude_todo(doc, cfg):
             plan.append((doc.id, None))
     return plan
 
@@ -1566,20 +1611,30 @@ def inspiration_block() -> str:
 
 
 # ------------------------------------------------------------ résumé pour l'interface
-def waiting_for_claude(doc: BenchDoc) -> bool:
+def claude_todo(doc: BenchDoc, cfg: AppConfig | None = None) -> bool:
+    """Une étape Claude reste à faire : en attente, en erreur, ou sautée faute de clé alors qu'il y en a une
+    maintenant (la vidéo, mesurée sans clé, peut être analysée par Claude sans rien remesurer)."""
+    st = doc.state.steps
+    if any(st[s].status in ("pending", "error") for s in CLAUDE_STEPS):
+        return True
+    return st["observe"].status == "skipped" and claude_available(cfg or AppConfig.load())
+
+
+def waiting_for_claude(doc: BenchDoc, cfg: AppConfig | None = None) -> bool:
     """Mesures prêtes, analyse Claude à lancer (ni faite, ni déjà validée, ni un Short)."""
     st = doc.state.steps
     return (
         all(st[s].status == "done" for s in LOCAL_STEPS)
-        and any(st[s].status in ("pending", "error") for s in CLAUDE_STEPS)
         and not doc.state.claude_ok
         and not doc.state.metrics.get("short")
+        and claude_todo(doc, cfg)
     )
 
 
-def pending_claude(store: BenchmarkStore) -> dict:
+def pending_claude(store: BenchmarkStore, cfg: AppConfig | None = None) -> dict:
     """Barre « Claude » : vidéos mesurées qui attendent Claude, et le coût estimé (avec la fourchette)."""
-    docs = [d for d in store.list() if waiting_for_claude(d) and d.state.estimate]
+    cfg = cfg or AppConfig.load()
+    docs = [d for d in store.list() if waiting_for_claude(d, cfg) and d.state.estimate]
     total = lambda key: round(sum(float(d.state.estimate.get(key) or 0.0) for d in docs), 2)  # noqa: E731
     return {"count": len(docs), "usd": total("usd"), "low": total("low"), "high": total("high"), "ids": [d.id for d in docs]}
 
@@ -1617,7 +1672,11 @@ def video_status(doc: BenchDoc, busy: str | None, cfg: AppConfig) -> str:
     if st["synthesize"].status == "done":
         if claude_analysed(doc):
             return "partielle" if doc.state.failed_chunks or doc.state.coverage < 0.999 else "analysee"
-        return "mesures_seules"
+        if st["observe"].status == "done":  # Claude a regardé, mais tout refusé ou synthèse impossible
+            return "partielle"
+        if not (st["observe"].status == "skipped" and claude_available(cfg)):
+            return "mesures_seules"
+        return "pret_claude"  # mesurée sans clé ; une clé a été ajoutée depuis
     if not claude_available(cfg):
         return "mesures_seules"
     if doc.state.claude.get("calls") and not chunk_records(doc):
