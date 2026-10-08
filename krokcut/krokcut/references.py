@@ -538,12 +538,17 @@ class ReferenceAnalyzer(StepRunner):
             thumb_tmp.replace(self.doc.root / "vignette.jpg")
         return f"{done} images"
 
+    def whisper_model(self) -> str:
+        """Modèle qui a transcrit : une transcription n'est réutilisée (onglet « Comparer ») qu'avec le même."""
+        return "fourni" if self.words_provider else (self.cfg.references_whisper_model or self.cfg.whisper.model)
+
     def step_transcribe(self) -> str:
         levels = self.levels()
+        model = self.whisper_model()
         if self.words_provider:
             words = self.words_provider(self.pcm, levels)
         else:
-            settings = self.cfg.whisper.model_copy(update={"model": self.cfg.references_whisper_model or self.cfg.whisper.model})
+            settings = self.cfg.whisper.model_copy(update={"model": model})
             words = transcribe_mix(
                 self.pcm,
                 levels,
@@ -553,10 +558,11 @@ class ReferenceAnalyzer(StepRunner):
                 log=self.doc.log,
             )
         lines = build_lines(words, levels)
-        self.doc.write_json("transcription.json", {"lines": lines})
+        self.doc.write_json("transcription.json", {"lines": lines, "whisper_model": model})
         self.doc.set_metrics(
             words_per_min=round(len(words) / max(self.duration / 60, 0.01)),
             speech_ratio=round(speech_ratio(words, self.duration), 2),
+            whisper_model=model,
         )
         return f"{len(words)} mots"
 

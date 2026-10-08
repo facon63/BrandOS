@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import audio as audio_mod
+from .benchmark import inspiration_block
 from .config import AppConfig, channel_bible, workspace_dir
 from .derush import build_story_claude, build_story_heuristic, find_moments_claude, find_moments_heuristic
 from .editing import build_plan, edit_heuristic, edit_with_claude
@@ -90,7 +91,7 @@ class Pipeline(StepRunner):
         return notes
 
     def system_prompt(self) -> str:
-        return base_system(channel_bible(), self.p.style(), self.names, self.reference_notes())
+        return base_system(channel_bible(), self.p.style(), self.names, self.reference_notes(), inspiration_block())
 
     # ------------------------------------------------------------ étapes
     def step_probe(self) -> str:

@@ -10,16 +10,22 @@ import threading
 from dataclasses import dataclass
 from typing import Literal
 
+from . import benchmark_report
+from .benchmark import BenchAnalyzer, BenchmarkStore
 from .config import AppConfig
 from .pipeline import Pipeline
 from .project import Project
 from .references import ReferenceAnalyzer, ReferenceStore, build_guide
+from .steps import Cancelled
 
-JobKind = Literal["project", "reference", "guide"]
+JobKind = Literal["project", "reference", "guide", "benchmark", "benchmark_report"]
 GUIDE_TARGET = "guide"
+REPORT_TARGET = "benchmark_report"
 # Les vidéos de référence et le guide passent avant les épisodes en attente :
 # un épisode lancé juste après avoir déposé des vidéos profite ainsi du guide à jour.
-PRIORITY = {"reference": 0, "guide": 1, "project": 2}
+# Les vidéos de l'onglet « Comparer » (longues à mesurer) passent après les épisodes en attente ;
+# une vidéo déjà lancée n'est pas interrompue.
+PRIORITY = {"reference": 0, "guide": 1, "project": 2, "benchmark": 3, "benchmark_report": 4}
 _counter = itertools.count()
 
 
@@ -60,6 +66,14 @@ class JobManager:
             if any(j.kind == "guide" for j in self.pending):
                 return False
             self._push_locked(Job(GUIDE_TARGET, kind="guide"))
+        return True
+
+    def submit_benchmark_report(self) -> bool:
+        """(Re)fait le rapport de comparaison, sauf s'il est déjà prévu."""
+        with self._lock:
+            if any(j.kind == "benchmark_report" for j in self.pending):
+                return False
+            self._push_locked(Job(REPORT_TARGET, kind="benchmark_report"))
         return True
 
     def next_job_locked(self) -> Job | None:
@@ -131,6 +145,14 @@ class JobManager:
         elif job.kind == "guide":
             store = ReferenceStore()
             build_guide(store, cfg)
+        elif job.kind == "benchmark":
+            store = BenchmarkStore()
+            BenchAnalyzer(store.open(job.target), cfg, store, cancel_event=self._cancel).run(job.from_step, job.until)
+        elif job.kind == "benchmark_report":
+            try:
+                benchmark_report.build_benchmark_report(BenchmarkStore(), cfg, cancel_event=self._cancel)
+            except Cancelled:  # annulé : l'ancien rapport reste en place
+                pass
 
 
 def _record_error(job: Job, exc: Exception) -> None:
@@ -139,6 +161,11 @@ def _record_error(job: Job, exc: Exception) -> None:
             doc = Project.open(job.target)
         elif job.kind == "reference":
             doc = ReferenceStore().open(job.target)
+        elif job.kind == "benchmark":
+            doc = BenchmarkStore().open(job.target)
+        elif job.kind == "benchmark_report":
+            (BenchmarkStore().root / "rapport_erreur.txt").write_text(str(exc), "utf-8")
+            return
         else:
             (ReferenceStore().root / "guide_erreur.txt").write_text(str(exc), "utf-8")
             return

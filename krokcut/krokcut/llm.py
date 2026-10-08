@@ -17,8 +17,15 @@ from .config import AppConfig
 PRICE_IN, PRICE_OUT, PRICE_CACHE_READ, PRICE_CACHE_WRITE = 4.0, 20.0, 0.20, 5.0
 
 
+# Nature de l'erreur, pour décider quoi faire : redécouper la requête (tronque, json, refus) ou
+# s'arrêter et reprendre plus tard (auth, limite, reseau, api).
+LLM_ERROR_KINDS = ("tronque", "refus", "json", "auth", "limite", "reseau", "api")
+
+
 class LLMError(RuntimeError):
-    pass
+    def __init__(self, message: str = "", kind: str = "api"):
+        super().__init__(message)
+        self.kind = kind if kind in LLM_ERROR_KINDS else "api"
 
 
 def claude_available(cfg: AppConfig) -> bool:
@@ -74,19 +81,20 @@ class LLM:
             "output_config": {"effort": effort, "format": {"type": "json_schema", "schema": schema}},
         }
         message = self._stream(params, use_fallbacks=self.cfg.use_fallbacks)
+        # Compté même si la réponse est inutilisable (refus, tronquée) : ces tokens sont facturés.
+        self._account(message, label)
 
         if message.stop_reason == "refusal":
             details = getattr(message, "stop_details", None)
-            raise LLMError(f"Claude a refusé la requête ({label}) : {getattr(details, 'explanation', '')}")
+            raise LLMError(f"Claude a refusé la requête ({label}) : {getattr(details, 'explanation', '')}", kind="refus")
         if message.stop_reason == "max_tokens":
-            raise LLMError(f"Réponse tronquée ({label}) : augmenter max_tokens ou réduire le lot.")
+            raise LLMError(f"Réponse tronquée ({label}) : augmenter max_tokens ou réduire le lot.", kind="tronque")
         text = "".join(block.text for block in message.content if block.type == "text")
         try:
             data = json.loads(text)
         except json.JSONDecodeError as exc:
-            raise LLMError(f"Réponse JSON illisible ({label}) : {exc}") from exc
+            raise LLMError(f"Réponse JSON illisible ({label}) : {exc}", kind="json") from exc
 
-        self._account(message, label)
         if cache_file:
             cache_file.write_text(json.dumps(data, ensure_ascii=False), "utf-8")
         return data
@@ -101,20 +109,20 @@ class LLM:
             with self.client.beta.messages.stream(**request) as stream:
                 return stream.get_final_message()
         except anthropic.AuthenticationError as exc:
-            raise LLMError("Clé API Anthropic invalide : vérifie-la dans les réglages.") from exc
+            raise LLMError("Clé API Anthropic invalide : vérifie-la dans les réglages.", kind="auth") from exc
         except anthropic.PermissionDeniedError as exc:
-            raise LLMError(f"Accès refusé par l'API Anthropic : {exc.message}") from exc
+            raise LLMError(f"Accès refusé par l'API Anthropic : {exc.message}", kind="auth") from exc
         except anthropic.BadRequestError as exc:
             if use_fallbacks:
                 self.log(f"Requête refusée avec les fallbacks ({exc.message}) : nouvel essai sans.")
                 return self._stream(params, use_fallbacks=False)
-            raise LLMError(f"Requête invalide : {exc.message}") from exc
+            raise LLMError(f"Requête invalide : {exc.message}", kind="api") from exc
         except anthropic.RateLimitError as exc:
-            raise LLMError("Limite de débit de l'API atteinte : réessaie dans quelques minutes.") from exc
+            raise LLMError("Limite de débit de l'API atteinte : réessaie dans quelques minutes.", kind="limite") from exc
         except anthropic.APIStatusError as exc:
-            raise LLMError(f"Erreur de l'API Anthropic ({exc.status_code}) : {exc.message}") from exc
+            raise LLMError(f"Erreur de l'API Anthropic ({exc.status_code}) : {exc.message}", kind="api") from exc
         except anthropic.APIConnectionError as exc:
-            raise LLMError("Impossible de joindre l'API Anthropic : vérifie la connexion internet.") from exc
+            raise LLMError("Impossible de joindre l'API Anthropic : vérifie la connexion internet.", kind="reseau") from exc
 
     def _account(self, message, label: str) -> None:
         u = message.usage
