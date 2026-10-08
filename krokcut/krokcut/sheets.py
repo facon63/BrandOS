@@ -69,6 +69,8 @@ TOKENS_PER_PIXEL = 750  # tokens d'une image ≈ ⌈largeur × hauteur / 750⌉
 
 # ------------------------------------------------------------- choix des cases (§3.7)
 CANDIDATE_FPS = 4  # images candidates (images4/f_%06d.jpg, k / 4 s)
+MEASURE_FPS = 30  # cadence des mesures de l'image (vision.FPS) : les transitoires y sont datés
+EXTRACT_LEAD = 0.005  # extraction à la demande : 5 ms avant l'image voulue
 CANDIDATE_DIR = "images4"
 SNAP_MAX = 0.125  # calage sur une image candidate à ±0,125 s, dans le même plan
 PLAN_MARGIN = 0.05  # un plan « a sa case » si une case tombe dans [début + 0,05 ; fin − 0,05]
@@ -237,8 +239,9 @@ def _event_instants(image_events: list[dict], sound_events: list[dict], music: l
         kw = {"plan": e.get("plan")}
         if kind == "zoom":
             point(t, EVENT_OFFSETS["zoom"], "zoom", **kw)
-        elif kind in TRANSIENT_TYPES:
-            span(t, dur, t + dur / 2, "flash", transient=True, **kw)
+        elif kind in TRANSIENT_TYPES:  # l'image du milieu du transitoire (instant de son début, pas entre deux images)
+            frames = max(1, int(round(dur * MEASURE_FPS)))
+            span(t, dur, t + (frames // 2) / MEASURE_FPS, "flash", transient=True, **kw)
         elif kind == "fige":
             span(t, dur, t + EVENT_OFFSETS["fige"], "fige", **kw)
         elif kind in FADE_TYPES:
@@ -654,8 +657,8 @@ def build_sheets(src: Path, work: Path, *, quality: str, duration: float, plans,
     for i, tile in enumerate(todo):
         dst = out_dir / EXTRACT_DIR / f"x_{tile['id']}.jpg"
         ok = False
-        try:
-            ok = extract_padded(src, tile["t"], dst, 640, 360)
+        try:  # ffmpeg rend la première image à partir de l'instant demandé : un peu avant, pour avoir celle-là
+            ok = extract_padded(src, max(0.0, tile["t"] - EXTRACT_LEAD), dst, 640, 360)
         except FFmpegUnavailable:
             raise
         except (FFmpegError, OSError):

@@ -332,12 +332,20 @@ def test_dimensions_jetons_et_taille_par_qualite(tmp_path_factory):
             assert (page["w"], page["h"], page["tokens"]) == (w, h, tokens) and max(w, h) <= sheets.MAX_SHEET_SIDE
             assert page["tokens"] == math.ceil(w * h / 750) and f.stat().st_size < 900 * 1024
             assert decode_jpegs([f], w, h).shape == (1, h, w, 3)
-        # les transitoires (flash, noir bref, image insérée) sont extraits à l'instant exact
+        # les transitoires (flash, noir bref, image insérée) sont extraits : la case montre bien l'image brève
         transients = [e for e in res["events"] if e["type"] in sheets.TRANSIENT_TYPES]
         assert data["extracted"] == len(transients) == 3
         for e in transients:
-            tile = next(t for t in data["tiles"] if abs(t["t"] - (e["t"] + e["dur"] / 2)) < 0.01)
+            tile = next(t for t in data["tiles"] if abs(t["t"] - (e["t"] + e["dur"] / 2)) < 0.02)
             assert tile["source"] == "extrait" and "FL" in tile["tags"]
+            page = data["sheets"][tile["sheet"]]
+            img = decode_jpegs([out / page["file"]], page["w"], page["h"])[0].astype(int)
+            x, y = _cell_origin(tile["cell"], preset)
+            pixels = img[y + preset.band_h + 10 : y + preset.band_h + preset.tile_h - 10, x + 10 : x + preset.tile_w - 10]
+            if e["type"] == "flash_blanc":
+                assert pixels.mean() > 230, (quality, e)
+            elif e["type"] == "noir_bref":
+                assert pixels.mean() < 25, (quality, e)
         assert not (out / "planches" / "extraits").exists()
         files = sorted(p.name for p in (out / "planches").iterdir())
         assert files == [f"planche_{i:03d}.jpg" for i in range(len(data["sheets"]))]  # ancienne qualité effacée
