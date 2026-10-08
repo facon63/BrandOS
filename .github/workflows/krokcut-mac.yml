@@ -1,0 +1,134 @@
+name: KrokCut — installation Mac
+
+# Vérifie sur de vrais Mac que la commande d'installation fonctionne de bout en bout :
+# installation, création de l'app, lancement par double-clic, tests, transcription Whisper.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "krokcut/**"
+      - ".github/workflows/krokcut-mac.yml"
+
+jobs:
+  mac:
+    name: ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            label: Mac Apple Silicon
+          - runner: macos-15-intel
+            label: Mac Intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Installation (la commande donnée aux utilisateurs)
+        env:
+          KROKCUT_REF: ${{ github.ref_name }}
+          KROKCUT_FORCE_FFMPEG_DOWNLOAD: "1" # teste le téléchargement de ffmpeg, même si le Mac l'a déjà
+          KROKCUT_NO_OPEN: "1"
+        run: bash krokcut/install-mac.sh
+
+      - name: L'app existe et démarre comme au double-clic
+        run: |
+          test -d ~/Applications/KrokCut.app
+          [ ! -d ~/Desktop ] || test -L ~/Desktop/KrokCut
+          ~/KrokCut/bin/ffmpeg -hide_banner -encoders | grep -E "libx264|libvpx-vp9"
+          open ~/Applications/KrokCut.app
+          for i in $(seq 1 120); do curl -fs http://127.0.0.1:8765/api/config && break; sleep 1; done
+          curl -fs http://127.0.0.1:8765/ | grep -q KrokCut
+          echo "Interface OK"
+
+      - name: Mise à jour pendant que KrokCut tourne (l'ancienne version ne doit pas rester en place)
+        env:
+          KROKCUT_REF: ${{ github.ref_name }}
+          KROKCUT_NO_OPEN: "1"
+        run: |
+          URL=http://127.0.0.1:8765
+          # Le code change sur le disque : le serveur en cours devient une « ancienne version »
+          echo "/* ancienne version */" >> ~/KrokCut/krokcut/web/style.css
+          curl -fs $URL/api/version | grep '"current":false'
+          # Double-clic sur l'app : elle doit relancer le serveur avec le nouveau code.
+          # On attend d'abord que l'app du lancement précédent soit fermée : tant qu'elle est
+          # ouverte, macOS se contente de la remettre au premier plan sans relancer son script.
+          for i in $(seq 1 60); do pgrep -f "KrokCut.app/Contents/MacOS" >/dev/null || break; sleep 0.5; done
+          open ~/Applications/KrokCut.app
+          for i in $(seq 1 120); do curl -fs $URL/api/version | grep '"current":true' && break; sleep 1; done
+          curl -fs $URL/api/version | grep '"current":true' \
+            || { pgrep -fl KrokCut; tail -20 ~/KrokCut/workspace/serveur.log; exit 1; }
+          # Un dossier personnel rangé dans ~/KrokCut (bibliothèque de sons…) doit survivre à la mise à jour
+          mkdir -p ~/KrokCut/"krok et mil"/sons && echo son > ~/KrokCut/"krok et mil"/sons/boing.wav
+          # La commande de mise à jour doit fermer KrokCut s'il est ouvert
+          bash krokcut/install-mac.sh
+          test -f ~/KrokCut/"krok et mil"/sons/boing.wav || { echo "La mise à jour a supprimé un dossier personnel"; exit 1; }
+          if curl -fs $URL/api/config >/dev/null; then echo "KrokCut tourne encore après la mise à jour"; exit 1; fi
+          for i in $(seq 1 60); do pgrep -f "KrokCut.app/Contents/MacOS" >/dev/null || break; sleep 0.5; done
+          open ~/Applications/KrokCut.app
+          for i in $(seq 1 120); do curl -fs $URL/api/config >/dev/null && break; sleep 1; done
+          curl -fs $URL/api/version | grep '"current":true'
+          curl -fs $URL/api/references >/dev/null
+          echo "Mise à jour OK"
+
+      - name: ffmpeg manquant (bouton « Réparer ffmpeg », vrai téléchargement)
+        run: |
+          URL=http://127.0.0.1:8765
+          # App lancée depuis le Finder (PATH minimal, sans variable) : ffmpeg trouvé dans ~/KrokCut/bin
+          (cd ~/KrokCut && env -i HOME="$HOME" PATH=/usr/bin:/bin .venv/bin/python -c \
+            "import os; from krokcut.ffmpeg_utils import binary; p = binary('ffmpeg'); print(p); assert p.startswith(os.path.expanduser('~/KrokCut/bin'))")
+          # Le cas signalé : ffprobe présent mais ffmpeg disparu de ~/KrokCut/bin
+          rm ~/KrokCut/bin/ffmpeg
+          if ! command -v ffmpeg >/dev/null && [ ! -x /opt/homebrew/bin/ffmpeg ] && [ ! -x /usr/local/bin/ffmpeg ]; then
+            curl -fs $URL/api/config | grep '"ok":false'
+            code=$(curl -s -o /dev/null -w "%{http_code}" -X PUT --data-binary "x" "$URL/api/upload/wankil.mp4?folder=references")
+            [ "$code" = 503 ] || { echo "Envoi accepté sans ffmpeg ($code)"; exit 1; }
+          else
+            echo "(un autre ffmpeg est installé sur ce Mac : KrokCut l'utilise en attendant)"
+          fi
+          curl -fs -X POST $URL/api/ffmpeg/repair
+          for i in $(seq 1 180); do curl -fs $URL/api/config | grep -q '"running":false' && break; sleep 1; done
+          curl -fs $URL/api/config | python3 -c "import json, sys; f = json.load(sys.stdin)['ffmpeg']; print(f); assert f['ok'] and not f['repair']['error'] and '/KrokCut/bin/' in f['ffmpeg']"
+          ~/KrokCut/bin/ffmpeg -hide_banner -encoders | grep libx264
+          echo "Réparation OK"
+
+      - name: Tests (rendu ffmpeg réel)
+        run: |
+          ~/KrokCut/bin/uv pip install --python ~/KrokCut/.venv/bin/python pytest jsonschema httpx
+          cd ~/KrokCut
+          PATH="$HOME/KrokCut/bin:$PATH" KROKCUT_FFMPEG_DIR="$HOME/KrokCut/bin" .venv/bin/python -m pytest -q
+
+      - name: Transcription Whisper sur la voix de synthèse du Mac
+        run: |
+          # La synthèse vocale des Mac de GitHub rend parfois un fichier vide (0,005 s) : on réessaie.
+          for i in 1 2 3 4 5; do
+            say -o "$RUNNER_TEMP/voix.aiff" "Hello Mil, this jump was terrible, we need to try again."
+            DUREE=$(afinfo "$RUNNER_TEMP/voix.aiff" | awk '/estimated duration/ {print $3}')
+            echo "Voix de synthèse : ${DUREE:-0} s"
+            awk -v d="${DUREE:-0}" 'BEGIN { exit !(d > 1) }' && break
+            sleep 5
+          done
+          awk -v d="${DUREE:-0}" 'BEGIN { exit !(d > 1) }' \
+            || { echo "La voix de synthèse du Mac de test reste vide : rien à transcrire"; exit 1; }
+          cd ~/KrokCut
+          PATH="$HOME/KrokCut/bin:$PATH" .venv/bin/python - <<'EOF'
+          import os, subprocess, tempfile
+          from pathlib import Path
+          from krokcut import audio
+          from krokcut.config import WhisperSettings
+          from krokcut.transcribe import transcribe_mix
+          tmp = Path(tempfile.mkdtemp())
+          subprocess.run(["ffmpeg", "-loglevel", "error", "-i", os.environ["RUNNER_TEMP"] + "/voix.aiff",
+                          "-ac", "1", "-ar", "16000", "-f", "s16le", str(tmp / "mix.pcm")], check=True)
+          curve = audio.level_curve(tmp / "mix.pcm")
+          levels = audio.Levels.compute_thresholds(curve, curve - 20)
+          words = transcribe_mix(tmp / "mix.pcm", levels, WhisperSettings(model="tiny", language="en"), tmp / "cache")
+          text = " ".join(w["w"] for w in words).lower()
+          print("Transcription :", text)
+          assert "jump" in text or "again" in text, text
+          EOF
+
+      - name: Quitter
+        if: always()
+        run: curl -fs -X POST http://127.0.0.1:8765/api/quit || true

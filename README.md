@@ -163,3 +163,10 @@ fil d'Ariane.
 Mobile-first, vérifié à 390 px, 768 px et 1440 px sur les 15 routes : aucun
 débordement horizontal. Le tableau comparatif défile dans son propre conteneur
 plutôt que d'écraser la page. La navigation mobile est un menu plein écran.
+
+## Autre outil du dépôt : KrokCut
+
+Le dossier [`krokcut/`](krokcut/README.md) contient une application indépendante (Python) de dérush et de
+montage automatiques pour la chaîne YouTube Krok et Mil : synchronisation de deux POV, transcription,
+sélection des moments par Claude, montage (zooms, bruitages, personnages) et export Premiere/DaVinci.
+Elle n'a aucun lien avec le site Next.js.
