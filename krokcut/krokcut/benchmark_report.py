@@ -319,7 +319,7 @@ def _metric(doc: BenchDoc, key: str):
     value = _number(m.get(key))
     if value is None:
         return None
-    if key in DEFINED_IF and not _number(m.get(DEFINED_IF[key])):
+    if key in DEFINED_IF and DEFINED_IF[key] in m and not _number(m[DEFINED_IF[key]]):
         return None
     if key in ZERO_IS_UNKNOWN and value <= 0:
         return None
