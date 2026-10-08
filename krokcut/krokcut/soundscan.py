@@ -142,16 +142,29 @@ ENTER_WINDOWS = 3
 EXIT_WINDOWS = 3
 MUSIC_MIN_S = 6.0
 MUSIC_MERGE_S = 2.0
-BG_WIN = 30  # fond sonore : 20e centile de E sur 0,3 s
-BG_PCT = 20
-EDGE_SEARCH_S = 4.0  # nappe : bornes cherchées à ±4 s des fenêtres
-BEAT_EDGE_S = 1.0  # musique rythmée : à ±1 s du premier et du dernier temps
+SEED_SHIFT_W = 5  # fenêtre de référence : 5 fenêtres à l'intérieur des bornes grossières
+UNKNOWN_MAX_W = 15  # fenêtres « on ne sait pas » (parole continue) qui ne coupent pas une musique...
+UNKNOWN_PROBE = (200, 400)  # ... sauf si le centre de l'une d'elles prouve qu'elle est partie
 BEAT_TOL = 3  # un temps tombe à ±30 ms de la grille du tempo
-BEAT_PEAK_K = 2.0  # attaque de grosse caisse : Dk au-dessus de médiane + 2·MAD du segment
-EDGE_SIDE = 30
+BEAT_PEAK_K = 2.0  # attaque de grosse caisse : Dk au-dessus de médiane + 2·MAD de la fenêtre
+BEAT_MISSES = 2  # deux temps manqués de suite : la grosse caisse s'est arrêtée
+KICK_GATE_DB = 8.0  # un temps est au plus 8 dB sous les autres en grave (une consonne qui démarre, non)
+KICK_RISE_DB = 6.0  # ... et le grave y monte d'au moins 6 dB par rapport aux 40 ms d'avant
+KICK_RISE_FRAMES = 4
+KICK_REF_PCT = 90  # niveau de référence d'un temps : 90e centile des attaques graves de la fenêtre
+FADE_KICK_DB = 4.0  # derniers temps suivis 4 dB sous ceux de la fenêtre : la musique s'éteint (fondu)
+BEAT_SEARCH_S = 3.0  # on suit les temps jusqu'à 3 s au-delà des fenêtres positives
+BOUND_SEARCH_S = 3.0  # bornes cherchées jusqu'à 3 s au-delà des dernières preuves de musique
+PRESENT_DB = 6.0  # trame sans parole à moins de 6 dB du niveau de la musique : elle est encore là
+ABSENT_MIN = 5  # 50 ms de trames à 12 dB sous ce niveau (même entre deux mots) : elle est partie
+ABSENT_HOLD_S = 2.0  # ... sans qu'elle revienne dans les 2 s
+LEVEL_MIN_FRAMES = 10  # trames sans parole nécessaires pour mesurer un niveau (sinon 20e centile de tout)
 CUT_DROP = 12.0  # coupure nette : chute ≥ 12 dB...
 CUT_SPAN = 20  # ... en ≤ 0,2 s
-FADE_DROP = 6.0
+FADE_DROP = 6.0  # fondu : le niveau hors parole a baissé de ≥ 6 dB entre [fin − 8 s, fin − 3 s]...
+FADE_FAR = (8.0, 3.0)
+FADE_NEAR_FRAMES = 20  # ... et les 20 trames sans parole les plus proches de la fin (à 2,5 s au plus)
+FADE_NEAR_MAX_S = 2.5
 CHANGE_TEMPO = 0.06
 CHANGE_CHROMA = 0.35
 CHANGE_LEVEL = 6.0
@@ -357,6 +370,7 @@ class Features:
     D: np.ndarray  # SuperFlux
     Dk: np.ndarray  # SuperFlux des bandes graves (grosse caisse)
     Dn: np.ndarray  # flux des bandes qui montent le plus (sons à bande étroite)
+    Ek: np.ndarray  # niveau (dB) sous 110 Hz : sépare une grosse caisse d'une consonne qui démarre
     bands: np.ndarray  # (T, 4) énergies sub / low / mid / high (STFT-A)
     flatness: np.ndarray
     chroma: np.ndarray  # (T, 12)
@@ -392,6 +406,7 @@ def _block_features(x: np.ndarray, n_frames: int) -> dict:
     dn = np.sort(flux, axis=1)[:, -NARROW_BANDS:].mean(axis=1)
     kick = _MEL_CENTERS < KICK_HZ
     dk = flux[:, kick].mean(axis=1) if kick.any() else np.zeros(n_frames, np.float32)
+    ek = _db(pa[:, (fa >= LOW90_HZ[0]) & (fa < KICK_HZ)].sum(axis=1)).astype(np.float32)
     pb = _power(x, NFFT_B, n_frames)
     chroma = pb @ _CHROMA
     chroma /= chroma.sum(axis=1, keepdims=True) + 1e-12
@@ -400,7 +415,7 @@ def _block_features(x: np.ndarray, n_frames: int) -> dict:
     fb = _hz_bins(NFFT_B)
     music_band = (fb >= CHROMA_RANGE[0]) & (fb <= CHROMA_RANGE[1])
     lines = (stable[:, music_band] >= TONAL_LINE_FRAMES).sum(axis=1)
-    return {"E": e, "D": d.astype(np.float32), "Dk": dk.astype(np.float32), "Dn": dn.astype(np.float32),
+    return {"E": e, "D": d.astype(np.float32), "Dk": dk.astype(np.float32), "Dn": dn.astype(np.float32), "Ek": ek,
             "bands": bands.astype(np.float32),
             "flatness": flat, "chroma": chroma.astype(np.float32), "lines": lines.astype(np.int16)}
 
@@ -439,10 +454,10 @@ def _features_from(read: Callable[[float, float], np.ndarray], duration: float,
             on_block(min(1.0, t0 / max(duration, 1e-6)))
     if not parts:
         empty = np.zeros(0, np.float32)
-        return Features(empty, empty, empty, empty, np.zeros((0, 4), np.float32), empty,
+        return Features(empty, empty, empty, empty, empty, np.zeros((0, 4), np.float32), empty,
                         np.zeros((0, 12), np.float32), np.zeros(0, np.int16), read)
     cat = {k: np.concatenate(v) for k, v in parts.items()}
-    return Features(cat["E"], cat["D"], cat["Dk"], cat["Dn"], cat["bands"], cat["flatness"], cat["chroma"],
+    return Features(cat["E"], cat["D"], cat["Dk"], cat["Dn"], cat["Ek"], cat["bands"], cat["flatness"], cat["chroma"],
                     cat["lines"], read)
 
 
@@ -892,82 +907,46 @@ def _window_beats(dk: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return beat, lag
 
 
-def _bg_level(e: np.ndarray) -> np.ndarray:
-    """Fond sonore : 20e centile de E sur 0,3 s (passe sous les syllabes)."""
-    if len(e) < BG_WIN:
-        return e.astype(np.float64)
-    padded = np.pad(e.astype(np.float64), (BG_WIN // 2, BG_WIN - BG_WIN // 2 - 1), mode="edge")
-    return np.percentile(np.lib.stride_tricks.sliding_window_view(padded, BG_WIN), BG_PCT, axis=1)
+def _level(e: np.ndarray, speech: np.ndarray, a: int, b: int) -> float | None:
+    """Niveau du fond entre a et b : médiane de E sur les trames sans parole (20e centile de tout à défaut)."""
+    a, b = max(0, a), min(len(e), b)
+    if b <= a:
+        return None
+    free = ~speech[a:b]
+    if free.sum() >= LEVEL_MIN_FRAMES:
+        return float(np.median(e[a:b][free]))
+    return float(np.percentile(e[a:b], 20))
 
 
-def _edge(bg: np.ndarray, t: int, direction: int, search: int) -> tuple[int, str]:
-    """Affine une borne de musique : saut du fond sonore le plus net à ±`search` trames de t.
+def _free_level(e: np.ndarray, speech: np.ndarray, a: int, b: int) -> float | None:
+    """Comme `_level`, mais seulement sur les trames sans parole (None s'il n'y en a pas assez)."""
+    a, b = max(0, a), min(len(e), b)
+    free = ~speech[a:b] if b > a else np.zeros(0, bool)
+    return float(np.median(e[a:b][free])) if free.sum() >= LEVEL_MIN_FRAMES else None
 
-    direction −1 : fin (« coupure_nette » si le fond chute ≥ 12 dB en ≤ 0,2 s, « fondu » s'il a baissé
-    de ≥ 6 dB pendant les 4 s d'avant, sinon « normale ») ; +1 : début (« nette » ou « progressive »).
+
+def _last_free_level(e: np.ndarray, speech: np.ndarray, t: int, direction: int) -> float | None:
+    """Niveau des 20 trames sans parole les plus proches de t, d'un côté (−1 : avant t, +1 : après), à
+    2,5 s au plus : la musique juste avant sa fin (à plein niveau si elle est coupée, déjà basse en fondu)."""
+    a, b = (t - int(FADE_NEAR_MAX_S * FPS), t) if direction < 0 else (t, t + int(FADE_NEAR_MAX_S * FPS))
+    a, b = max(0, a), min(len(e), b)
+    free = np.flatnonzero(~speech[a:b]) + a if b > a else np.zeros(0, np.int64)
+    if len(free) < LEVEL_MIN_FRAMES:
+        return None
+    near = free[-FADE_NEAR_FRAMES:] if direction < 0 else free[:FADE_NEAR_FRAMES]
+    return float(np.median(e[near]))
+
+
+def _window_states(feats: Features, speech: np.ndarray, beat: np.ndarray, lag: np.ndarray) -> tuple[np.ndarray, list[str]]:
+    """État de chaque fenêtre de 6 s : 1 musique, 0 pas de musique, −1 on ne sait pas (parole continue).
+
+    Rythmée : pic d'autocorrélation de la grosse caisse ≥ 0,30 et tempo stable sur les 4 fenêtres d'avant.
+    Nappe : raies stables, harmonie qui change et niveau au-dessus du plancher, mesurés hors parole.
     """
-    n = len(bg)
-    lo = max(EDGE_SIDE, t - search)
-    hi = min(n - EDGE_SIDE, t + search)
-    best, step = t, 0.0
-    if hi > lo:
-        idx = np.arange(lo, hi)
-        left = np.array([np.median(bg[i - EDGE_SIDE : i]) for i in idx])
-        right = np.array([np.median(bg[i : i + EDGE_SIDE]) for i in idx])
-        steps = (left - right) if direction < 0 else (right - left)
-        k = int(np.argmax(steps))
-        best, step = int(idx[k]), float(steps[k])
-        a, b = max(0, best - CUT_SPAN // 2), min(n - 1, best + CUT_SPAN // 2)
-        quick = (bg[a] - bg[b]) if direction < 0 else (bg[b] - bg[a])
-        if step >= CUT_DROP and quick >= CUT_DROP * 0.75:
-            return best, "coupure_nette" if direction < 0 else "nette"
-    if direction < 0:
-        far = float(np.median(bg[max(0, t - 4 * FPS) : max(1, t - 3 * FPS)]))
-        near = float(np.median(bg[max(0, t - FPS) : t + 1]))
-        return t, "fondu" if far - near >= FADE_DROP else "normale"
-    return t, "progressive"
-
-
-def _beat_span(dk: np.ndarray, a: int, b: int, lag: float) -> tuple[int, int] | None:
-    """Premier et dernier temps de la plus longue suite d'attaques graves espacées d'un temps (± 30 ms)."""
-    if lag <= 0 or b - a < 3 * lag:
-        return None
-    seg = dk[a:b]
-    med = float(np.median(seg))
-    mad = float(np.median(np.abs(seg - med))) + 1e-6
-    padded = np.pad(seg, ONSET_LOCAL, mode="edge")
-    local = seg >= np.lib.stride_tricks.sliding_window_view(padded, 2 * ONSET_LOCAL + 1).max(axis=1)
-    peaks = np.flatnonzero(local & (seg > med + BEAT_PEAK_K * mad)) + a
-    best: tuple[int, int, int] | None = None  # (nombre de temps, premier, dernier)
-    used = set()
-    for i, p0 in enumerate(peaks):
-        if p0 in used:
-            continue
-        chain = [int(p0)]
-        for q in peaks[i + 1 :]:
-            gap = q - chain[-1]
-            if any(abs(gap - m * lag) <= BEAT_TOL * m for m in (1, 2)):  # un temps manqué est toléré
-                chain.append(int(q))
-                used.add(q)
-            elif gap > 2 * lag + BEAT_TOL * 2:
-                break
-        if best is None or len(chain) > best[0]:
-            best = (len(chain), chain[0], chain[-1])
-    if best is None or best[0] < 4:
-        return None
-    return best[1], best[2]
-
-
-def detect_music(feats: Features, speech: np.ndarray) -> dict:
-    """Musique de fond (§4.4) : segments M#, tempo, niveau sous les voix, changements, fin."""
     e = feats.E
-    n = feats.n
-    beat, lag = _window_beats(feats.Dk)
     nw = len(beat)
-    if not nw:
-        return {"pct": 0.0, "segments": []}
-    floor = float(np.percentile(e, FLOOR_PCT))
-    positive = np.zeros(nw, bool)
+    floor = float(np.percentile(e, FLOOR_PCT)) if len(e) else FLOOR_DB
+    state = np.zeros(nw, np.int8)
     kinds = [""] * nw
     for w in range(nw):
         a = w * MUSIC_STEP
@@ -975,60 +954,227 @@ def detect_music(feats: Features, speech: np.ndarray) -> dict:
         hist = lag[max(0, w - LAG_HISTORY) : w]
         steady = len(hist) > 0 and abs(lag[w] - float(np.median(hist))) <= LAG_TOL
         if beat[w] >= BEAT_MIN and steady:
-            positive[w], kinds[w] = True, "rythmee"
+            state[w], kinds[w] = 1, "rythmee"
             continue
         free = ~speech[a:b]
-        if free.sum() >= TONAL_MIN_FREE:
-            lines = feats.lines[a:b][free]
-            chroma = feats.chroma[a:b]
-            blocks = [chroma[i : i + CHROMA_BLOCK][free[i : i + CHROMA_BLOCK]] for i in range(0, MUSIC_WIN, CHROMA_BLOCK)]
-            means = [blk.mean(axis=0) for blk in blocks if len(blk) >= 10]
-            var = max((float(np.abs(x - y).sum()) for x, y in zip(means, means[1:])), default=0.0)
-            level = float(np.median(e[a:b][free]))
-            if np.mean(lines >= TONAL_LINES) >= TONAL_FRAC and var >= CHROMA_VAR and level >= floor + TONAL_ABOVE_FLOOR:
-                positive[w], kinds[w] = True, "nappe"
-    # segments : 3 fenêtres positives pour entrer, 3 négatives pour sortir
-    raw: list[list[int]] = []
-    run_pos = run_neg = 0
-    cur = None
-    for w in range(nw):
-        if positive[w]:
-            run_pos, run_neg = run_pos + 1, 0
-            if cur is None and run_pos >= ENTER_WINDOWS:
-                cur = [w - ENTER_WINDOWS + 1, w]
-            elif cur is not None:
+        if free.sum() < TONAL_MIN_FREE:
+            state[w] = -1  # parole presque continue : une nappe dessous ne se mesure pas
+            continue
+        lines = feats.lines[a:b][free]
+        chroma = feats.chroma[a:b]
+        blocks = [chroma[i : i + CHROMA_BLOCK][free[i : i + CHROMA_BLOCK]] for i in range(0, MUSIC_WIN, CHROMA_BLOCK)]
+        means = [blk.mean(axis=0) for blk in blocks if len(blk) >= 10]
+        var = max((float(np.abs(x - y).sum()) for x, y in zip(means, means[1:])), default=0.0)
+        level = float(np.median(e[a:b][free]))
+        if np.mean(lines >= TONAL_LINES) >= TONAL_FRAC and var >= CHROMA_VAR and level >= floor + TONAL_ABOVE_FLOOR:
+            state[w], kinds[w] = 1, "nappe"
+    return state, kinds
+
+
+def _window_runs(state: np.ndarray) -> list[tuple[int, int]]:
+    """Suites de fenêtres musicales : on entre après 3 positives, on sort après 3 négatives. Les fenêtres
+    « on ne sait pas » ne comptent ni pour ni contre, sauf plus de 10 de suite. Bornes : positives extrêmes."""
+    out: list[tuple[int, int]] = []
+    cur: list[int] | None = None
+    pos = neg = unk = 0
+    first = 0
+    for w, st in enumerate(state):
+        if st == 1:
+            neg = unk = 0
+            if cur is not None:
                 cur[1] = w
+                continue
+            first = w if pos == 0 else first
+            pos += 1
+            if pos >= ENTER_WINDOWS:
+                cur = [first, w]
+        elif st == 0:
+            neg, unk = neg + 1, 0
+            if cur is None:
+                pos = 0
+            elif neg >= EXIT_WINDOWS:
+                out.append((cur[0], cur[1]))
+                cur, pos = None, 0
         else:
-            run_neg, run_pos = run_neg + 1, 0
-            if cur is not None and run_neg >= EXIT_WINDOWS:
-                raw.append(cur)
-                cur = None
+            unk += 1
+            if unk > UNKNOWN_MAX_W:
+                if cur is not None:
+                    out.append((cur[0], cur[1]))
+                cur, pos = None, 0
     if cur is not None:
-        raw.append(cur)
-    bg = _bg_level(e)
+        out.append((cur[0], cur[1]))
+    return out
+
+
+def _split_runs(e: np.ndarray, speech: np.ndarray, state: np.ndarray, runs: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Coupe une suite là où une fenêtre « on ne sait pas » montre la musique absente entre deux mots
+    (trames 12 dB sous le niveau des fenêtres musicales d'avant)."""
+    out: list[tuple[int, int]] = []
+    for w0, w1 in runs:
+        start, last_pos = w0, w0
+        bed = _level(e, speech, w0 * MUSIC_STEP, w0 * MUSIC_STEP + MUSIC_WIN)
+        broken = False
+        for w in range(w0 + 1, w1 + 1):
+            if state[w] == 1:
+                if broken:
+                    out.append((start, last_pos))
+                    start, broken = w, False
+                last_pos = w
+                bed = _level(e, speech, w * MUSIC_STEP, w * MUSIC_STEP + MUSIC_WIN)
+            elif state[w] == -1 and bed is not None and not broken:
+                c = w * MUSIC_STEP
+                broken = _gone(e, c + UNKNOWN_PROBE[0], c + UNKNOWN_PROBE[1], bed)
+        out.append((start, last_pos))
+    return out
+
+
+def _walk_beats(feats: Features, w: int, lag: float, direction: int, limit: int) -> tuple[int, float] | None:
+    """Dernier (direction +1) ou premier (−1) temps de grosse caisse, en suivant le tempo depuis la fenêtre w
+    (au plus jusqu'à la trame `limit`). Renvoie (trame, baisse en dB des deux derniers temps suivis par
+    rapport aux temps de la fenêtre : une grosse caisse qui s'éteint peu à peu, c'est un fondu).
+
+    Le train de temps de la fenêtre donne la phase et le niveau grave des temps ; on avance d'un temps à
+    la fois (recalé sur l'attaque trouvée à ±30 ms), jusqu'à deux temps manqués de suite. Une consonne
+    qui démarre fait aussi monter le flux grave, mais beaucoup moins haut en niveau : elle est écartée.
+    """
+    dk, ek = feats.Dk, feats.Ek
+    n = len(dk)
+    a, b = w * MUSIC_STEP, min(n, w * MUSIC_STEP + MUSIC_WIN)
+    if lag <= 0 or b - a < 3 * lag:
+        return None
+    seg = dk[a:b]
+    med = float(np.median(seg))
+    thr = med + BEAT_PEAK_K * (float(np.median(np.abs(seg - med))) + 1e-6)
+    lo, hi = (a, min(n, limit)) if direction > 0 else (max(0, limit), b)
+    # attaques graves : le flux grave dépasse le seuil et le niveau sous 110 Hz bondit (≥ 6 dB en 40 ms)
+    floor_before = np.lib.stride_tricks.sliding_window_view(np.pad(ek, (KICK_RISE_FRAMES, 0), mode="edge"),
+                                                            KICK_RISE_FRAMES)[:n].min(axis=1)
+    level = np.maximum(ek, np.concatenate([ek[1:], ek[-1:]]))
+    hit = (dk > thr) & (level - floor_before >= KICK_RISE_DB)
+    inside = np.flatnonzero(hit[a:b]) + a
+    if len(inside) < 3:
+        return None
+    # niveau d'un temps : les attaques les plus fortes en grave de la fenêtre (les consonnes restent dessous)
+    gate = float(np.percentile(level[inside], KICK_REF_PCT)) - KICK_GATE_DB
+    ok = hit & (level >= gate)
+    inside = inside[level[inside] >= gate]
+    best: tuple[int, np.ndarray] | None = None
+    for p0 in inside:  # phase qui aligne le plus d'attaques
+        k = (inside - p0) / lag
+        on = np.abs(k - np.round(k)) * lag <= BEAT_TOL
+        if best is None or int(on.sum()) > best[0]:
+            best = (int(on.sum()), inside[on])
+    train = best[1]
+    if len(train) < 3:
+        return None
+    last = int(train[-1] if direction > 0 else train[0])
+    pos, misses = float(last), 0
+    ref = float(np.median(level[train]))
+    levels = [float(level[t]) for t in (train if direction > 0 else train[::-1])]
+    # à chaque temps attendu : la trame la plus forte (flux grave) parmi les attaques au niveau d'un temps
+    while misses < BEAT_MISSES:
+        pos += direction * lag
+        c = int(round(pos))
+        if not lo <= c < hi:
+            break
+        i0, i1 = max(lo, c - BEAT_TOL), min(hi, c + BEAT_TOL + 1)
+        cand = np.flatnonzero(ok[i0:i1])
+        if len(cand):
+            last = i0 + int(cand[int(np.argmax(dk[i0:i1][cand]))])
+            pos, misses = float(last), 0
+            levels.append(float(level[last]))
+        else:
+            misses += 1
+    return last, ref - float(np.mean(levels[-2:]))
+
+
+def _bound(e: np.ndarray, speech: np.ndarray, anchor: int, fallback: int, bed: float, direction: int) -> tuple[int, bool]:
+    """Borne d'une musique (direction +1 : fin, −1 : début), à partir d'un instant où elle est sûrement là.
+
+    Trames « présentes » : sans parole, à moins de 6 dB du niveau de la musique. Trames « absentes » : à
+    12 dB sous ce niveau, parole ou non (la musique ne peut pas jouer sous le bruit de fond : c'est la
+    preuve qu'elle est partie, même entre deux mots). La borne suit la dernière présence après laquelle la
+    musique reste absente (≥ 50 ms d'absence en 2 s, sans retour). Si la parole cache la transition, on
+    garde la position attendue (`fallback`), bornée par ce qu'on a vu. Renvoie (trame, transition nette).
+    La fin est la première trame sans musique ; le début, la première trame avec.
+    """
+    n = len(e)
+    stop = anchor + direction * int(BOUND_SEARCH_S * FPS)
+    idx = np.arange(anchor, stop, direction)
+    idx = idx[(idx >= 0) & (idx < n)]
+    free = idx[~speech[idx]]
+    present = free[e[free] >= bed - PRESENT_DB]
+    absent = idx[e[idx] <= bed - CUT_DROP]
+    hold = int(ABSENT_HOLD_S * FPS)
+    for p in [anchor, *present.tolist()]:
+        later = (absent - p) * direction
+        back = (present - p) * direction
+        if np.sum((later > 0) & (later <= hold)) >= ABSENT_MIN and not np.any((back > 0) & (back <= hold)):
+            last_seen = p
+            break
+    else:
+        if len(present) and (stop < 0 or stop > n):  # la musique va jusqu'au bord du fichier
+            return (0 if direction < 0 else n), False
+        return int(np.clip(fallback, 0, n)), False
+    later = (absent - last_seen) * direction
+    gone = int(absent[later > 0][0])
+    between = free[((free - last_seen) * direction > 0) & ((gone - free) * direction > 0)]
+    edge = gone if direction > 0 else last_seen
+    if abs(gone - last_seen) <= CUT_SPAN:  # transition vue : nette
+        return edge, True
+    if len(between) >= LEVEL_MIN_FRAMES:  # baisse progressive visible (fondu) : la musique s'éteint à `gone`
+        return edge, False
+    # transition cachée par la parole : position attendue, entre la dernière présence et la première absence
+    lo_b, hi_b = sorted((last_seen, gone + (1 if direction < 0 else 0)))
+    return int(np.clip(fallback, lo_b, hi_b)), False
+
+
+def detect_music(feats: Features, speech: np.ndarray) -> dict:
+    """Musique de fond (§4.4) : segments M#, tempo, niveau sous les voix, changements, début et fin."""
+    e = feats.E
+    n = feats.n
+    beat, lag = _window_beats(feats.Dk)
+    if not len(beat):
+        return {"pct": 0.0, "segments": []}
+    state, kinds = _window_states(feats, speech, beat, lag)
+    positive = state == 1
     voice_db = _voice_level(e, speech)
     segs: list[dict] = []
-    for w0, w1 in raw:
-        # bornes grossières : centres des fenêtres extrêmes ± 2 s ; musique rythmée : premier et dernier
-        # temps de la grosse caisse ; puis affinées sur le saut du fond sonore
-        start = max(0, int((w0 * MUSIC_STEP + MUSIC_WIN // 2) - 2 * FPS))
-        end = min(n, int((w1 * MUSIC_STEP + MUSIC_WIN // 2) + 2 * FPS))
-        search = int(EDGE_SEARCH_S * FPS)
+    for w0, w1 in _split_runs(e, speech, state, _window_runs(state)):
+        a0, b1 = w0 * MUSIC_STEP, min(n, w1 * MUSIC_STEP + MUSIC_WIN)
+        # Fenêtres de référence entièrement dans la musique : une fenêtre rythmée est positive dès qu'elle
+        # contient quelques temps, donc 5 fenêtres après la première positive (et avant la dernière).
+        ws = min(w1, w0 + SEED_SHIFT_W)
+        we = max(w0, w1 - SEED_SHIFT_W)
         rhythmic = [w for w in range(w0, w1 + 1) if kinds[w] == "rythmee"]
-        if rhythmic:
-            lag_w = float(np.median(lag[rhythmic]))
-            span = _beat_span(feats.Dk, max(0, w0 * MUSIC_STEP), min(n, w1 * MUSIC_STEP + MUSIC_WIN), lag_w)
-            if span:
-                start, end = span[0], min(n, int(span[1] + lag_w))
-                search = int(BEAT_EDGE_S * FPS)
-        start, start_kind = _edge(bg, start, +1, search)
-        end, end_kind = _edge(bg, end, -1, search)
-        if segs and start - segs[-1]["_end"] < MUSIC_MERGE_S * FPS:
+        bed_start = _level(e, speech, ws * MUSIC_STEP, ws * MUSIC_STEP + MUSIC_WIN) or FLOOR_DB
+        bed_end = _level(e, speech, we * MUSIC_STEP, we * MUSIC_STEP + MUSIC_WIN) or FLOOR_DB
+        # début : premier temps de la grosse caisse, s'il arrive dès les premières fenêtres ; sinon première
+        # preuve de musique (nappe, intro sans batterie)
+        seed = next((w for w in rhythmic if w >= ws), rhythmic[-1] if rhythmic else None)
+        search = int(BEAT_SEARCH_S * FPS)
+        walk = _walk_beats(feats, seed, float(lag[seed]), -1, a0 - search) if seed is not None else None
+        fade_in = walk is not None and walk[1] >= FADE_KICK_DB
+        if walk is not None and walk[0] <= a0 + MUSIC_WIN:
+            start, start_cut = _bound(e, speech, walk[0], walk[0], bed_start, -1)
+        else:
+            start, start_cut = _bound(e, speech, ws * MUSIC_STEP, max(0, a0 + MUSIC_WIN // 2 - 2 * FPS), bed_start, -1)
+        # fin : dernier temps (la musique s'arrête avant le temps suivant), ou dernière preuve de musique
+        seed = next((w for w in reversed(rhythmic) if w <= we), rhythmic[0] if rhythmic else None)
+        walk = _walk_beats(feats, seed, float(lag[seed]), +1, b1 + search) if seed is not None else None
+        fade_out = walk is not None and walk[1] >= FADE_KICK_DB
+        if walk is not None and walk[0] >= w1 * MUSIC_STEP:
+            end, end_cut = _bound(e, speech, walk[0], int(walk[0] + lag[seed] / 2), bed_end, +1)
+        else:
+            end, end_cut = _bound(e, speech, we * MUSIC_STEP + MUSIC_WIN, min(n, b1 - MUSIC_WIN // 2 + 2 * FPS), bed_end, +1)
+        end = max(end, start + 1)
+        if segs and start - segs[-1]["_end"] < MUSIC_MERGE_S * FPS:  # deux morceaux presque collés : un seul
             prev = segs[-1]
-            prev["_end"], prev["end_kind"] = end, end_kind
+            prev.update(_end=end, _end_cut=end_cut, _bed_end=bed_end, _fade_out=fade_out)
             prev["_w"][1] = w1
             continue
-        segs.append({"_start": start, "_end": end, "_w": [w0, w1], "start_kind": start_kind, "end_kind": end_kind})
+        segs.append({"_start": start, "_end": end, "_w": [w0, w1], "_start_cut": start_cut, "_end_cut": end_cut,
+                     "_bed_start": bed_start, "_bed_end": bed_end, "_fade_in": fade_in, "_fade_out": fade_out})
     out = []
     for seg in segs:
         a, b = seg["_start"], seg["_end"]
@@ -1043,15 +1189,49 @@ def detect_music(feats: Features, speech: np.ndarray) -> dict:
         level = float(np.percentile(e[a:b][free], 20)) if free.sum() >= 10 else float(np.percentile(e[a:b], 20))
         out.append({
             "id": f"M{len(out) + 1}", "start": round(a / FPS, 2), "end": round(b / FPS, 2), "kind": kind, "bpm": bpm,
-            "level_vs_voice_db": round(level - voice_db, 1), "start_kind": seg["start_kind"], "end_kind": seg["end_kind"],
-            "changes": _music_changes(feats, speech, lag, positive, a, b),
+            "level_vs_voice_db": round(level - voice_db, 1),
+            "start_kind": "progressive" if seg["_fade_in"] else _start_kind(e, speech, a, seg["_bed_start"], seg["_start_cut"]),
+            "end_kind": "fondu" if seg["_fade_out"] else _end_kind(e, speech, b, seg["_bed_end"], seg["_end_cut"]),
+            "changes": _music_changes(feats, speech, lag, np.array([k == "rythmee" for k in kinds]), a, b),
         })
     total = sum(s["end"] - s["start"] for s in out)
     return {"pct": round(100.0 * total / max(feats.duration, 1e-6), 1), "segments": out}
 
 
-def _music_changes(feats: Features, speech: np.ndarray, lag: np.ndarray, positive: np.ndarray, a: int, b: int) -> list[dict]:
-    """Changements de morceau dans un segment : tempo, harmonie ou niveau du fond, tenus ≥ 4 s."""
+def _gone(e: np.ndarray, a: int, b: int, level: float) -> bool:
+    """La musique est absente entre a et b : au moins 50 ms de trames 12 dB sous son niveau (parole ou non)."""
+    a, b = max(0, a), min(len(e), b)
+    return b > a and int(np.sum(e[a:b] <= level - CUT_DROP)) >= ABSENT_MIN
+
+
+def _end_kind(e: np.ndarray, speech: np.ndarray, end: int, bed: float, cut: bool) -> str:
+    """« fondu » si le niveau hors parole a baissé de ≥ 6 dB entre [fin − 8 s, fin − 3 s] et [fin − 1,5 s, fin] ;
+    « coupure_nette » si la musique, restée à son niveau, a disparu juste après (chute vue en ≤ 0,2 s, ou
+    cachée par la parole mais prouvée par les trames qui suivent) ; sinon « normale »."""
+    far = _free_level(e, speech, end - int(FADE_FAR[0] * FPS), end - int(FADE_FAR[1] * FPS))
+    near = _last_free_level(e, speech, end, -1)
+    level = bed if far is None else far
+    if near is not None and level - near >= FADE_DROP:
+        return "fondu"
+    if cut or _gone(e, end, end + int(ABSENT_HOLD_S * FPS), level):
+        return "coupure_nette"
+    return "normale"
+
+
+def _start_kind(e: np.ndarray, speech: np.ndarray, start: int, bed: float, cut: bool) -> str:
+    """« nette » si la musique arrive d'un coup (à son niveau dès la première seconde et demie, rien juste
+    avant), sinon « progressive »."""
+    first = _last_free_level(e, speech, start, +1)
+    if first is not None and bed - first >= FADE_DROP:
+        return "progressive"
+    if cut or _gone(e, start - int(ABSENT_HOLD_S * FPS), start, bed):
+        return "nette"
+    return "progressive"
+
+
+def _music_changes(feats: Features, speech: np.ndarray, lag: np.ndarray, rhythmic: np.ndarray, a: int, b: int) -> list[dict]:
+    """Changements de morceau dans un segment : tempo (entre fenêtres rythmées), harmonie ou niveau du fond,
+    tenus ≥ 4 s."""
     side = int(CHANGE_SIDE_S)
     hold = int(CHANGE_HOLD_S)
     first_w = int(np.ceil(a / MUSIC_STEP))
@@ -1060,8 +1240,8 @@ def _music_changes(feats: Features, speech: np.ndarray, lag: np.ndarray, positiv
     flags: list[tuple[int, str]] = []
     for w in range(first_w + side, last_w - side + 1):
         why = ""
-        before = [lag[i] for i in range(w - side, w - 2) if positive[i]]
-        after = [lag[i] for i in range(w + 2, w + side) if positive[i]]
+        before = [lag[i] for i in range(w - side, w - 2) if rhythmic[i]]
+        after = [lag[i] for i in range(w + 2, w + side) if rhythmic[i]]
         if len(before) >= 2 and len(after) >= 2:
             lb, la = float(np.median(before)), float(np.median(after))
             if abs(la - lb) / lb > CHANGE_TEMPO:
