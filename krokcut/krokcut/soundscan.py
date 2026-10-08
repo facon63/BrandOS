@@ -144,7 +144,10 @@ MUSIC_MIN_S = 6.0
 MUSIC_MERGE_S = 2.0
 BG_WIN = 30  # fond sonore : 20e centile de E sur 0,3 s
 BG_PCT = 20
-EDGE_SEARCH_S = 4.0
+EDGE_SEARCH_S = 4.0  # nappe : bornes cherchées à ±4 s des fenêtres
+BEAT_EDGE_S = 1.0  # musique rythmée : à ±1 s du premier et du dernier temps
+BEAT_TOL = 3  # un temps tombe à ±30 ms de la grille du tempo
+BEAT_PEAK_K = 2.0  # attaque de grosse caisse : Dk au-dessus de médiane + 2·MAD du segment
 EDGE_SIDE = 30
 CUT_DROP = 12.0  # coupure nette : chute ≥ 12 dB...
 CUT_SPAN = 20  # ... en ≤ 0,2 s
@@ -154,6 +157,7 @@ CHANGE_CHROMA = 0.35
 CHANGE_LEVEL = 6.0
 CHANGE_HOLD_S = 4.0
 CHANGE_SIDE_S = 6.0
+CHANGE_WITHIN = 2.0  # l'harmonie change vraiment : 2 fois plus qu'à l'intérieur de chaque côté (suite d'accords)
 
 # ------------------------------------------------------------- silences (§4.5)
 SILENCE_DB = -60.0
@@ -896,28 +900,62 @@ def _bg_level(e: np.ndarray) -> np.ndarray:
     return np.percentile(np.lib.stride_tricks.sliding_window_view(padded, BG_WIN), BG_PCT, axis=1)
 
 
-def _edge(bg: np.ndarray, t: int, direction: int) -> tuple[int, str]:
-    """Affine une borne de musique : saut du fond sonore le plus net autour de t. direction −1 : fin."""
+def _edge(bg: np.ndarray, t: int, direction: int, search: int) -> tuple[int, str]:
+    """Affine une borne de musique : saut du fond sonore le plus net à ±`search` trames de t.
+
+    direction −1 : fin (« coupure_nette » si le fond chute ≥ 12 dB en ≤ 0,2 s, « fondu » s'il a baissé
+    de ≥ 6 dB pendant les 4 s d'avant, sinon « normale ») ; +1 : début (« nette » ou « progressive »).
+    """
     n = len(bg)
-    lo = max(EDGE_SIDE, t - int(EDGE_SEARCH_S * FPS))
-    hi = min(n - EDGE_SIDE, t + int(EDGE_SEARCH_S * FPS))
-    if hi <= lo:
-        return t, "normale" if direction < 0 else "progressive"
-    idx = np.arange(lo, hi)
-    left = np.array([np.median(bg[i - EDGE_SIDE : i]) for i in idx])
-    right = np.array([np.median(bg[i : i + EDGE_SIDE]) for i in idx])
-    step = (left - right) if direction < 0 else (right - left)
-    k = int(np.argmax(step))
-    best = int(idx[k])
-    a, b = max(0, best - CUT_SPAN // 2), min(n - 1, best + CUT_SPAN // 2)
-    quick = (bg[a] - bg[b]) if direction < 0 else (bg[b] - bg[a])
-    if step[k] >= CUT_DROP and quick >= CUT_DROP * 0.75:
-        return best, "coupure_nette" if direction < 0 else "nette"
+    lo = max(EDGE_SIDE, t - search)
+    hi = min(n - EDGE_SIDE, t + search)
+    best, step = t, 0.0
+    if hi > lo:
+        idx = np.arange(lo, hi)
+        left = np.array([np.median(bg[i - EDGE_SIDE : i]) for i in idx])
+        right = np.array([np.median(bg[i : i + EDGE_SIDE]) for i in idx])
+        steps = (left - right) if direction < 0 else (right - left)
+        k = int(np.argmax(steps))
+        best, step = int(idx[k]), float(steps[k])
+        a, b = max(0, best - CUT_SPAN // 2), min(n - 1, best + CUT_SPAN // 2)
+        quick = (bg[a] - bg[b]) if direction < 0 else (bg[b] - bg[a])
+        if step >= CUT_DROP and quick >= CUT_DROP * 0.75:
+            return best, "coupure_nette" if direction < 0 else "nette"
     if direction < 0:
-        far = int(np.median(bg[max(0, t - 4 * FPS) : max(1, t - 3 * FPS)])) if t > 3 * FPS else bg[0]
+        far = float(np.median(bg[max(0, t - 4 * FPS) : max(1, t - 3 * FPS)]))
         near = float(np.median(bg[max(0, t - FPS) : t + 1]))
         return t, "fondu" if far - near >= FADE_DROP else "normale"
     return t, "progressive"
+
+
+def _beat_span(dk: np.ndarray, a: int, b: int, lag: float) -> tuple[int, int] | None:
+    """Premier et dernier temps de la plus longue suite d'attaques graves espacées d'un temps (± 30 ms)."""
+    if lag <= 0 or b - a < 3 * lag:
+        return None
+    seg = dk[a:b]
+    med = float(np.median(seg))
+    mad = float(np.median(np.abs(seg - med))) + 1e-6
+    padded = np.pad(seg, ONSET_LOCAL, mode="edge")
+    local = seg >= np.lib.stride_tricks.sliding_window_view(padded, 2 * ONSET_LOCAL + 1).max(axis=1)
+    peaks = np.flatnonzero(local & (seg > med + BEAT_PEAK_K * mad)) + a
+    best: tuple[int, int, int] | None = None  # (nombre de temps, premier, dernier)
+    used = set()
+    for i, p0 in enumerate(peaks):
+        if p0 in used:
+            continue
+        chain = [int(p0)]
+        for q in peaks[i + 1 :]:
+            gap = q - chain[-1]
+            if any(abs(gap - m * lag) <= BEAT_TOL * m for m in (1, 2)):  # un temps manqué est toléré
+                chain.append(int(q))
+                used.add(q)
+            elif gap > 2 * lag + BEAT_TOL * 2:
+                break
+        if best is None or len(chain) > best[0]:
+            best = (len(chain), chain[0], chain[-1])
+    if best is None or best[0] < 4:
+        return None
+    return best[1], best[2]
 
 
 def detect_music(feats: Features, speech: np.ndarray) -> dict:
@@ -971,11 +1009,20 @@ def detect_music(feats: Features, speech: np.ndarray) -> dict:
     voice_db = _voice_level(e, speech)
     segs: list[dict] = []
     for w0, w1 in raw:
-        # bornes grossières : centres des fenêtres extrêmes ± 2 s, puis affinées sur le fond sonore
+        # bornes grossières : centres des fenêtres extrêmes ± 2 s ; musique rythmée : premier et dernier
+        # temps de la grosse caisse ; puis affinées sur le saut du fond sonore
         start = max(0, int((w0 * MUSIC_STEP + MUSIC_WIN // 2) - 2 * FPS))
         end = min(n, int((w1 * MUSIC_STEP + MUSIC_WIN // 2) + 2 * FPS))
-        start, start_kind = _edge(bg, start, +1)
-        end, end_kind = _edge(bg, end, -1)
+        search = int(EDGE_SEARCH_S * FPS)
+        rhythmic = [w for w in range(w0, w1 + 1) if kinds[w] == "rythmee"]
+        if rhythmic:
+            lag_w = float(np.median(lag[rhythmic]))
+            span = _beat_span(feats.Dk, max(0, w0 * MUSIC_STEP), min(n, w1 * MUSIC_STEP + MUSIC_WIN), lag_w)
+            if span:
+                start, end = span[0], min(n, int(span[1] + lag_w))
+                search = int(BEAT_EDGE_S * FPS)
+        start, start_kind = _edge(bg, start, +1, search)
+        end, end_kind = _edge(bg, end, -1, search)
         if segs and start - segs[-1]["_end"] < MUSIC_MERGE_S * FPS:
             prev = segs[-1]
             prev["_end"], prev["end_kind"] = end, end_kind
@@ -997,18 +1044,19 @@ def detect_music(feats: Features, speech: np.ndarray) -> dict:
         out.append({
             "id": f"M{len(out) + 1}", "start": round(a / FPS, 2), "end": round(b / FPS, 2), "kind": kind, "bpm": bpm,
             "level_vs_voice_db": round(level - voice_db, 1), "start_kind": seg["start_kind"], "end_kind": seg["end_kind"],
-            "changes": _music_changes(feats, bg, lag, positive, a, b),
+            "changes": _music_changes(feats, speech, lag, positive, a, b),
         })
     total = sum(s["end"] - s["start"] for s in out)
     return {"pct": round(100.0 * total / max(feats.duration, 1e-6), 1), "segments": out}
 
 
-def _music_changes(feats: Features, bg: np.ndarray, lag: np.ndarray, positive: np.ndarray, a: int, b: int) -> list[dict]:
+def _music_changes(feats: Features, speech: np.ndarray, lag: np.ndarray, positive: np.ndarray, a: int, b: int) -> list[dict]:
     """Changements de morceau dans un segment : tempo, harmonie ou niveau du fond, tenus ≥ 4 s."""
     side = int(CHANGE_SIDE_S)
     hold = int(CHANGE_HOLD_S)
     first_w = int(np.ceil(a / MUSIC_STEP))
     last_w = min(len(lag) - 1, (b - MUSIC_WIN) // MUSIC_STEP)
+    free = ~speech[: feats.n]
     flags: list[tuple[int, str]] = []
     for w in range(first_w + side, last_w - side + 1):
         why = ""
@@ -1021,12 +1069,18 @@ def _music_changes(feats: Features, bg: np.ndarray, lag: np.ndarray, positive: n
         t = w * MUSIC_STEP + MUSIC_WIN // 2
         lo, hi = t - side * FPS, t + side * FPS
         if not why and lo >= a and hi <= b:
-            cb = feats.chroma[lo:t].mean(axis=0)
-            ca = feats.chroma[t:hi].mean(axis=0)
-            if float(np.abs(cb - ca).sum()) > CHANGE_CHROMA:
+            half = side * FPS // 2
+            means = [feats.chroma[i : i + half].mean(axis=0) for i in (lo, lo + half, t, t + half)]
+            cross = float(np.abs(means[0] + means[1] - means[2] - means[3]).sum() / 2)
+            within = max(float(np.abs(means[0] - means[1]).sum()), float(np.abs(means[2] - means[3]).sum()))
+            lb_free, la_free = free[lo:t], free[t:hi]
+            if cross > CHANGE_CHROMA and cross > CHANGE_WITHIN * within:
                 why = "harmonie"
-            elif abs(float(np.median(bg[lo:t])) - float(np.median(bg[t:hi]))) > CHANGE_LEVEL:
-                why = "niveau"
+            elif lb_free.sum() >= FPS and la_free.sum() >= FPS:  # niveau du fond : trames sans parole
+                level_b = float(np.median(feats.E[lo:t][lb_free]))
+                level_a = float(np.median(feats.E[t:hi][la_free]))
+                if abs(level_a - level_b) > CHANGE_LEVEL:
+                    why = "niveau"
         if why:
             flags.append((t, why))
     changes: list[dict] = []
