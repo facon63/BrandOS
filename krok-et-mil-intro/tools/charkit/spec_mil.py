@@ -24,44 +24,48 @@ parts = [
         "pivot": (247, 480),
         "hidden": [
             # cou sous le menton
-            {"poly": [(216, 230), (284, 230), (287, 276), (214, 276)], "fill": [0.95, 0.72, 0.58], "clean_lines": True,
+            {"poly": [(222, 230), (280, 230), (283, 274), (219, 274)], "fill": [0.95, 0.72, 0.58],
              "ink": [[(224, 236), (222, 268)], [(279, 236), (281, 266)]]},
             # flanc gauche sous la manche et l'avant-bras
             {"poly": [(208, 281), (194, 289), (186, 304), (184, 325), (186, 346), (188, 366), (188, 486), (204, 486), (204, 281)],
-             "fill": "diffuse",
-             "ink": [[(194, 289), (186, 304), (184, 325), (186, 346), (188, 366), (189, 420), (189, 484)]]},
+             "fill": "diffuse"},
             # flanc droit
             {"poly": [(294, 282), (311, 290), (318, 305), (318, 330), (311, 351), (306, 367), (305, 486), (290, 486), (290, 282)],
-             "fill": "diffuse",
-             "ink": [[(311, 290), (318, 305), (318, 330), (311, 351), (306, 367), (305, 420), (305, 484)]]},
+             "fill": "diffuse"},
         ],
     },
     {
-        "name": "arm_L", "z": 20, "parent": "torso",
+        "name": "arm_L", "z": 20, "parent": "torso", "seam_overlay": True,
         "polys": [[(150, 288), (198, 290), (192, 310), (190, 360), (189, 500), (150, 500)]],
         "pivot": (186, 302),
         "bones": {"shoulder": (186, 302), "elbow": (178, 392), "wrist": (174, 506), "hand": (176, 520)},
     },
     {
-        "name": "arm_R", "z": 20.1, "parent": "torso",
+        "name": "arm_R", "z": 20.1, "parent": "torso", "seam_overlay": True,
         "polys": [[(300, 290), (352, 290), (352, 500), (306, 500), (300, 366), (297, 330)]],
         "pivot": (314, 304),
         "bones": {"shoulder": (314, 304), "elbow": (324, 392), "wrist": (322, 506), "hand": (322, 520)},
     },
     {
-        "name": "head", "z": 30, "parent": "torso",
+        "name": "hair_back", "z": 29, "parent": "head", "polys": [], "pivot": (250, 258),
+        "hidden": [
+            {"poly": [(150, 84), (305, 84), (332, 150), (334, 236), (170, 236), (150, 160)], "fill": [0.25, 0.16, 0.10]},
+        ],
+    },
+    {
+        "name": "head", "z": 30, "parent": "torso", "absorb": {"from": ["torso"], "dist": 1, "lum": 0.40},
         "polys": [[(182, 142), (296, 142), (300, 228), (284, 246), (262, 262), (238, 262), (206, 246), (186, 226), (178, 160)]],
         "pivot": (250, 258),
         "hidden": [
             # front / crâne sous la frange
-            {"poly": [(186, 128), (296, 128), (298, 160), (184, 160)], "fill": "diffuse", "clean_lines": True},
-            # côtés du visage sous les écouteurs
-            {"poly": [(172, 160), (196, 160), (198, 232), (176, 232)], "fill": "diffuse"},
-            {"poly": [(280, 150), (302, 150), (302, 236), (278, 236)], "fill": "diffuse"},
+            {"poly": [(184, 166), (188, 146), (204, 132), (240, 126), (276, 130), (292, 142), (300, 166)], "fill": "diffuse"},
+            # côtés du visage sous les écouteurs (chevauchent le front)
+            {"poly": [(172, 152), (198, 152), (198, 232), (176, 232)], "fill": "diffuse"},
+            {"poly": [(276, 140), (304, 146), (304, 236), (276, 236)], "fill": "diffuse"},
         ],
     },
     {
-        "name": "hair", "z": 32, "parent": "head",
+        "name": "hair", "z": 32, "parent": "head", "absorb": {"from": ["head"], "dist": 2, "lum": 0.2},
         "polys": [[(150, 84), (300, 84), (318, 150), (300, 176), (286, 178), (282, 150), (250, 144), (215, 146), (186, 152), (182, 172), (166, 172), (150, 150)]],
         "pivot": (240, 150),
         "hidden": [
@@ -88,4 +92,4 @@ barriers = [
 overrides = []
 
 spec = {"name": NAME, "src": SRC, "parts": parts, "barriers": barriers, "overrides": overrides,
-        "top_y": TOP_Y, "pad_bottom": PAD_BOTTOM}
+        "top_y": TOP_Y, "pad_bottom": PAD_BOTTOM, "rim_w": 2.4, "underlay": 3}

@@ -28,7 +28,7 @@ L'unité **u** = 1 pixel de la référence de Krok.
 | Facteur d'échelle | 1 | **0,728** px-Krok par px-Mil |
 
 Pourquoi 0,728 : c'est le facteur qui donne à la fois des **visages à la même échelle**
-(écartement des pupilles : Krok 40 u, Mil 52,6 px-Mil = 38,3 u) et une **longueur de jambe
+(écartement des pupilles : Krok 37 u, Mil 52,1 px-Mil = 37,9 u) et une **longueur de jambe
 visible égale** à celle de Krok (≈ 140 u). Dans le moteur, chaque personnage est placé par
 « point au sol + hauteur totale en pixels » : la même valeur pour les deux garantit l'égalité
 de taille dans tous les plans.
@@ -43,7 +43,7 @@ de taille dans tous les plans.
 | Largeur max | 190 (x 156→345) | au niveau des manches, y≈290 |
 | Tête (sommet casquette → menton) | ≈ 141 (33 % de la hauteur) | grosse tête cartoon |
 | Visage seul (bord casquette → menton) | ≈ 95 × 77 | |
-| Pupilles (centres) | (244, 117) et (284, 117) → 40 | |
+| Pupilles (centres de l'iris) | (244,5 ; 117) et (281,5 ; 117) → 37 | regard centré, très légèrement vers la gauche de l'image |
 | Épaules / buste | ≈ 182 de large | hoodie ample, arrondi en tonneau |
 | Jambes visibles (ourlet → semelle) | ≈ 140 (33 %) | jambes courtes, légèrement écartées, pied droit tourné vers l'extérieur |
 | Pose de référence | de face, buste très légèrement tourné vers la gauche de l'image (manche droite vue de profil, étroite) | |
@@ -68,7 +68,8 @@ rouge, plus lumineux). C'est #833280 qui sert de couleur d'identité (logo « KR
 
 ### Yeux, bouche, visage
 
-- Yeux en **amande**, mi-ouverts, regard légèrement vers la droite de l'image ; paupière
+- Yeux en **amande**, mi-ouverts, regard centré (très légèrement vers la gauche de l'image : ne pas
+  compter sur un regard de Krok vers Mil, placé à sa gauche à l'écran) ; paupière
   supérieure épaisse et noire, pli de paupière fin au-dessus, iris brun quasi noir avec un
   petit reflet blanc, cils bas discrets.
 - Sourcils noirs épais, légèrement arqués.
@@ -96,7 +97,7 @@ rouge, plus lumineux). C'est #833280 qui sert de couleur d'identité (logo « KR
 | Hauteur totale (construite) | 585 | 426 | jambes construites |
 | Tête (épi → bas de la barbe) | ≈ 173 | ≈ 126 (30 %) | |
 | Largeur casque compris | 175 | 127 | |
-| Pupilles | (201, 188) et (252,6, 188) → 52,6 | 38,3 | yeux ronds |
+| Pupilles | (201, 188) et (252,6, 188) → 52,1 | 37,9 | yeux ronds |
 | Épaules (t-shirt) | 179 | 130 | **71 % de la largeur de Krok** |
 | Taille (ourlet du t-shirt) | y ≈ 483 | | |
 | Jambes (ourlet → semelle) | 191 | 139 | construites |
@@ -141,23 +142,25 @@ rouge, plus lumineux). C'est #833280 qui sert de couleur d'identité (logo « KR
 
 | Partie | Construction | Pourquoi ainsi |
 |---|---|---|
-| Jambes / pantalon | Pantalon de Krok ré-échantillonné à la morphologie de Mil (×0,90 en largeur, ×1,37 en hauteur en px-Mil, soit 69 % de la largeur de Krok en u), recoloré (transfert Lab) vers le gris-ardoise #2D3538 de la bande visible | même trait, mêmes plis, même grain que la référence → style identique |
-| Chaussures | Chaussures de Krok, échelle **uniforme** (×1,25 px-Mil = 0,91× Krok), liseré d'encre sur le haut exposé | aucune déformation, noires comme demandé |
+| Jambes / pantalon | Pantalon de Krok **retourné en miroir** (Mil est éclairé par la gauche, Krok par la droite), ré-échantillonné à la morphologie de Mil (×0,90 en largeur et ×1,38 en hauteur en px-Mil, soit ≈ 65 % de la largeur de Krok en u), recoloré (transfert Lab) vers le gris-ardoise #2D3538 de la bande visible ; **contour extérieur ré-épaissi** au calibre du haut du corps de Mil (le ré-échantillonnage anisotrope l'amincissait de ~30 %) | mêmes plis, même grain que la référence |
+| Chaussures | Chaussures de Krok, échelle **uniforme** (×1,25 px-Mil = 0,91× Krok) ; l'ourlet du pantalon les recouvre de 3 px (aucun jour) ; col arrondi et encré là où la chaussure dépasse du pantalon | aucune déformation, noires comme demandé |
 | Taille | La bande de pantalon d'origine (y 485–499) est conservée et fondue sur 6 px dans le pantalon construit ; l'entrejambe vient du même pantalon | raccord invisible |
 | Poignets | L'avant-bras coupé au cadre est prolongé de 9 px en étirant la dernière ligne (profil, ombrage et contours inclus), avec une légère conicité | raccord sans bracelet visible |
-| Mains | Main gauche de Krok (même dessin, peau identique à 2 % près), à l'échelle du poignet de Mil ; main droite = miroir | style identique, aucune main « inventée » d'un autre trait |
+| Mains | Main gauche de Krok (même dessin, peau identique à 2 % près), **allongée** (×1,27 en longueur ; ×1,00 / ×1,12 en largeur selon le poignet) : ≈ 35 u, soit 8,3 % de la hauteur (Krok : 9 %) ; main droite = miroir ; débris d'encre hérités retirés | doigts plus fins, au gabarit de Mil ; même trait |
 
 ## 4. Trait et rendu (commun aux deux)
 
-- **Contour noir** (#030302–#040203) d'environ **2–2,5 px sur 426 px de hauteur**, soit
-  **≈ 0,55 % de la hauteur du personnage** (contour extérieur un peu plus épais que les traits
-  intérieurs, qui varient de 1 à 2 px). À l'écran : personnage de 700 px de haut → trait ≈ 3,8 px.
-- Après mise à l'échelle commune, le trait de Mil est ~25 % plus fin que celui de Krok
-  (sa référence est dessinée plus grande) ; écart jugé non gênant, compensable au rendu.
+- **Contour extérieur noir** (#030302–#040203), mesuré à mi-densité sur les bords de la
+  silhouette : **Krok ≈ 1,75 u (0,41 % de la hauteur), Mil ≈ 2,6 px-Mil = 1,9 u (0,45 %)**.
+  Les deux sont donc au même calibre à 5–10 % près une fois à la même taille. Traits intérieurs
+  ≈ 1–1,5 u. À l'écran : personnage de 700 px de haut → contour ≈ 3 px.
+- **Cible pour tout trait ajouté en code : ≈ 0,43 % de la hauteur du personnage.**
 - **Cel-shading** à 2–3 tons + **rim light** clair sur un bord (Krok : manche/flanc droit en
   rose #D69CC6 ; Mil : flanc gauche en #CFEF55) + léger grain d'aplat.
 - Règle pour tout ajout dessiné en code (tenues, accessoires, yeux) : **même encre, même
-  épaisseur proportionnelle (0,55 % de la hauteur), cel-shading 2 tons, petit grain**.
+  épaisseur proportionnelle (≈ 0,43 % de la hauteur), cel-shading 2 tons, petit grain**.
+- Les traits doux de la référence (bords de moustache brun foncé, plis de paupière, stries des
+  mèches) restent bruns : l'upscale ne noircit que vers la couleur la plus sombre locale.
 
 ## 5. Calques et rig (résultat de l'étape 2)
 
@@ -178,9 +181,20 @@ Calques raster ×4 dans `assets/characters/<nom>/layers/`, rig dans `rig.json`
 | cap (dôme + mèche + sangle) | |
 
 Zones cachées reconstruites (diffusion de couleur + grain + **contour d'encre redessiné**) :
-flancs du buste sous les bras, cou sous le menton, capuche sous les mèches, haut des jambes
-sous l'ourlet, pantalon sous les mains, crâne sous la casquette / la frange, haut des
-chaussures sous le pantalon, cheveux sous l'arceau du casque.
+flancs du buste et coins bas du hoodie sous les bras, cou sous le menton, capuche sous les
+mèches, haut des jambes sous l'ourlet, pantalon sous les mains, intérieur de cuisse, crâne sous
+la casquette / la frange, haut des chaussures sous le pantalon, cheveux sous l'arceau du casque.
+
+Règles automatiques appliquées à tous les calques :
+- **sous-couche** : chaque calque se prolonge de 3 px sous les calques du dessus → aucune couture
+  semi-transparente au repos ;
+- **liseré automatique** : tout bord reconstruit (invisible au repos) reçoit un contour d'encre
+  anti-aliasé au calibre de la référence → visible et propre dès que le calque du dessus bouge ;
+- **fond de cheveux** (`hair_back`, sans pixels visibles au repos) : quand les mèches de Krok ou
+  les épis de Mil bougent, on découvre des cheveux, jamais un trou ;
+- **liseré de couture des manches** (`arm_*__seam`) : là où la manche est coupée dans le tissu
+  (haut de l'épaule), un trait apparaît en fondu dès 4–20° de rotation d'épaule ;
+- les cordons de Krok emportent leur ombre portée ; la tête emporte les restes de trait du menton.
 
 ## 6. Invariants pour les 5 univers
 
@@ -197,11 +211,15 @@ chaussures sous le pantalon, cheveux sous l'arceau du casque.
 
 - Références de face uniquement : pas de vrai profil ni de dos (plans remplacés par
   face/trois-quarts, miroir, échelle, caméra).
-- Bras levés au-delà d'environ **110°** : l'épaule se pince (surtout la manche droite de Krok,
-  vue de trois-quarts, très étroite). Les poses au-delà seront évitées ou traitées avec un
-  pivot d'épaule relevé.
-- Inclinaison de tête recommandée ≤ ±6° (au-delà, de petites zones de capuche reconstruites
-  apparaissent sous les mèches de Krok).
+- Bras levés : propres jusqu'à ~110°, sauf la **manche droite de Krok** (vue de profil, très
+  étroite) : le moteur l'élargit progressivement quand elle se lève (×1,75 à 85°) pour éviter
+  l'effet « spaghetti », mais au-delà de **90°** sa racine se dentelle. Limite retenue : 90° pour ce
+  bras ; les gestes amples (high-five, bras levé) se feront avec le bras gauche de Krok.
+- Plages validées par le contrôle automatique (`tools/review/checks.py`, 19 poses × 2) : tête
+  ±6°, balancier des cheveux ±8°, hanches ±20°, genoux ±30°, squash 0,9–1,1, chevilles ±25°.
+  Aucun bord sans encre. Les « trous » restants sont des espaces négatifs naturels (fond vu
+  entre le pouce et la cuisse, entre une mèche soulevée et l'épaule, entre un bras plié et le
+  buste), pas des déchirures.
 - Résolution source 500×500 : les calques sont agrandis ×4 avec un upscale « spécial trait »
   (traits re-nettoyés, silhouette nette). Très bon jusqu'à ~900 px de hauteur de personnage à
   l'écran ; au-delà (gros plans visage plein cadre), un léger flou de texture devient visible.

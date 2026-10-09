@@ -12,7 +12,7 @@
 import numpy as np
 import cv2
 
-from .img import diffuse_fill, luminance
+from .img import diffuse_fill, luminance, smoothstep
 from .layers import INK, aa_stroke_mask, aa_poly_mask
 
 # Échelle : 1 px de la référence de Mil = MIL_SCALE px de la référence de Krok.
@@ -28,7 +28,7 @@ SOLE_Y = int(round(MIL_TOP + KROK_HEIGHT / MIL_SCALE))  # ≈ 674
 K_HEM, M_HEM = 333.0, 483.0      # ourlet du haut (hoodie / t-shirt)
 K_CX, M_CX = 256.0, 247.5        # axe des hanches
 PANTS_SX = 0.90                  # Mil plus fin
-PANTS_SY = (SOLE_Y - M_HEM) / (KROK_SOLE - K_HEM)
+PANTS_SY = (SOLE_Y + 3 - M_HEM) / (KROK_SOLE - K_HEM)   # ourlet 3 px plus bas : recouvre le haut de la chaussure
 SHOE_K = 1.25                    # chaussures : échelle uniforme (≈ 0.91 × Krok en taille monde)
 
 
@@ -86,6 +86,45 @@ def pants_pt(x, y):
     return (M_CX + (x - K_CX) * PANTS_SX, M_HEM + (y - K_HEM) * PANTS_SY)
 
 
+def pants_matrix_mirror():
+    # jambe de Krok retournée (éclairage de Mil venant de la gauche) : x' = M_CX + (K_CX - x) * sx
+    return np.array([[-PANTS_SX, 0, M_CX + K_CX * PANTS_SX],
+                     [0, PANTS_SY, M_HEM - K_HEM * PANTS_SY]])
+
+
+def pants_pt_mirror(x, y):
+    return (M_CX + (K_CX - x) * PANTS_SX, M_HEM + (y - K_HEM) * PANTS_SY)
+
+
+def ink_rim(L, width, zone=None):
+    """Assombrit vers l'encre une bande anti-aliasée de `width` px à l'intérieur de la silhouette."""
+    from .layers import aa_inner_rim
+    r = aa_inner_rim(L[..., 3], width)
+    if zone is not None:
+        r *= zone
+    frac = np.clip(r / np.maximum(L[..., 3], 1e-4), 0, 1)[..., None]
+    out = L.copy()
+    out[..., :3] = L[..., :3] * (1 - frac) + INK * frac
+    return out
+
+
+def keep_main_blob(L, open_r=2):
+    """Garde la plus grande composante et retire les épines fines (ouverture morphologique)."""
+    from scipy import ndimage
+    m = (L[..., 3] > 0.3).astype(np.uint8)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * open_r + 1, 2 * open_r + 1))
+    mo = cv2.morphologyEx(m, cv2.MORPH_OPEN, k)
+    lab, n = ndimage.label(mo)
+    if n == 0:
+        return L
+    sizes = ndimage.sum(mo, lab, range(1, n + 1))
+    big = (lab == (1 + int(np.argmax(sizes)))).astype(np.uint8)
+    keep = cv2.dilate(big, np.ones((3, 3), np.uint8)).astype(np.float32)
+    out = L.copy()
+    out[..., 3] *= keep
+    return out
+
+
 def shoe_matrix(k_pivot, k_sole=KROK_SOLE):
     """Chaussure à l'échelle uniforme, centrée sous la cheville transformée, semelle au sol de Mil."""
     px, py = pants_pt(*k_pivot)
@@ -95,12 +134,33 @@ def shoe_matrix(k_pivot, k_sole=KROK_SOLE):
                      [0, s, SOLE_Y - k_sole * s]])
 
 
-def hand_matrix(k_top_center, m_top_center, s, mirror=False):
+def hand_matrix(k_top_center, m_top_center, sx, sy, mirror=False):
     kx, ky = k_top_center
     mx, my = m_top_center
-    sx = -s if mirror else s
+    sx = -sx if mirror else sx
     return np.array([[sx, 0, mx - kx * sx],
-                     [0, s, my - ky * s]])
+                     [0, sy, my - ky * sy]])
+
+
+def shoe_matrix_at(k_pivot, target, k_sole=KROK_SOLE):
+    s = SHOE_K
+    return np.array([[s, 0, target[0] - k_pivot[0] * s],
+                     [0, s, SOLE_Y - k_sole * s]])
+
+
+# chevilles de Krok (os) ; jambes de Mil = jambes de Krok en miroir (L <- R, R <- L)
+K_ANKLE = {"L": (213, 452), "R": (291, 452)}
+K_HIP = {"L": (225, 352), "R": (291, 352)}
+K_KNEE = {"L": (221, 402), "R": (293, 402)}
+MIRROR_SRC = {"L": "R", "R": "L"}
+
+
+def mil_leg_bones(side):
+    k = MIRROR_SRC[side]
+    return {"hip": pants_pt_mirror(*K_HIP[k]), "knee": pants_pt_mirror(*K_KNEE[k]), "ankle": pants_pt_mirror(*K_ANKLE[k])}
+
+HAND_SX = {"L": 1.00, "R": 1.12}
+HAND_SY = 1.27
 
 
 def construct(mil_layers, mil_img, krok_layers, krok_spec, mil_spec):
@@ -119,85 +179,106 @@ def construct(mil_layers, mil_img, krok_layers, krok_spec, mil_spec):
     src = lab_stats(kl[..., :3], km)
 
     new = {}
-    # --- jambes
-    Mp = pants_matrix()
+    yy = np.arange(H)[:, None].astype(np.float32)
+    xx = np.arange(W)[None, :].astype(np.float32)
+    # --- jambes : pantalon de Krok en miroir (éclairage), recoloré, contour ré-épaissi au calibre de Mil
+    Mp = pants_matrix_mirror()
+    rim_w = mil_spec.get("rim_w", 2.4)
     for side in ("L", "R"):
-        leg = warp_layer(recolor(krok_layers["leg_" + side], src, dst), Mp, out_shape)
-        new["leg_" + side] = leg
-    # entrejambe (dans le torse de Krok) -> intégré au bassin de Mil
+        leg = warp_layer(recolor(krok_layers["leg_" + MIRROR_SRC[side]], src, dst), Mp, out_shape)
+        new["leg_" + side] = ink_rim(leg, rim_w * 0.9)
     kt = krok_layers["torso"].copy()
     crotch = aa_poly_mask(kt.shape[:2], [(252, 336), (276, 336), (270, 360), (256, 360)])
     kt[..., 3] *= crotch
     crotch_m = warp_layer(recolor(kt, src, dst), Mp, out_shape)
 
-    # --- chaussures
-    for side, piv in (("L", (210, 450)), ("R", (285, 449))):
-        Ms = shoe_matrix(piv)
-        shoe = warp_layer(krok_layers["shoe_" + side], Ms, out_shape)
-        # le haut caché de la chaussure n'existe que sous le pantalon (plus étroit chez Mil)
-        y_vis = SOLE_Y + (444 - KROK_SOLE) * SHOE_K
-        leg_a = cv2.dilate(new["leg_" + side][..., 3], np.ones((3, 3), np.uint8))
-        yy = np.arange(H)[:, None]
-        keep = np.where(yy < y_vis + 1.0, leg_a, 1.0)
+    # --- chaussures : échelle uniforme, haut arrondi et encré là où il dépasse du pantalon
+    legs_a = np.maximum(new["leg_L"][..., 3], new["leg_R"][..., 3])
+    y_vis = SOLE_Y + (444 - KROK_SOLE) * SHOE_K
+    from scipy import ndimage
+    for side, kpiv in (("L", (210, 450)), ("R", (285, 449))):
+        ankle = pants_pt_mirror(*K_ANKLE[MIRROR_SRC[side]])
+        shoe = warp_layer(krok_layers["shoe_" + side], shoe_matrix_at(kpiv, ankle), out_shape)
+        leg_a = new["leg_" + side][..., 3]
+        under = cv2.dilate((leg_a > 0.4).astype(np.uint8), np.ones((9, 9), np.uint8)).astype(np.float32)
+        sm = shoe[..., 3] > 0.3
+        cols = np.where(sm.any(0))[0]
+        xc, hw = 0.5 * (cols.min() + cols.max()), 0.5 * (cols.max() - cols.min())
+        # largeur du pantalon juste au-dessus de la chaussure
+        row = int(round(y_vis)) - 3
+        pc = np.where(leg_a[row] > 0.5)[0]
+        pw = 0.5 * (pc.max() - pc.min()) if len(pc) else hw * 0.7
+        pcx = 0.5 * (pc.max() + pc.min()) if len(pc) else xc
+        ex = np.clip((np.abs(xx - pcx) - pw) / max(hw - pw, 1.0), 0, 1)
+        y_top = y_vis + 0.5 + 6.0 * ex ** 1.6           # col arrondi autour de la cheville
+        under1 = cv2.dilate((leg_a > 0.4).astype(np.uint8), np.ones((3, 3), np.uint8)).astype(np.float32)
+        keep = np.where(yy < y_top, under1, 1.0)
+        # sous l'ourlet (irrégulier) : la chaussure remplit tout jusqu'au bas du pantalon, sans jour
+        r0, r1 = int(y_vis) - 18, int(y_vis) + 10
+        band = leg_a[r0:r1] > 0.4
+        has = band.any(0)
+        y_pb = np.where(has, r0 + (r1 - r0 - 1) - np.argmax(band[::-1], 0), 1e9).astype(np.float32)
+        keep = np.maximum(keep, ((yy >= y_pb[None, :] - 2.0) & has[None, :]).astype(np.float32))
         shoe[..., 3] *= keep
-        # liseré d'encre sur le haut de chaussure exposé à côté du pantalon
-        top_band = (yy >= y_vis + 0.5) & (yy < y_vis + 2.6) & (shoe[..., 3] > 0.3) & (leg_a < 0.4)
-        shoe[..., :3][top_band] = INK
+        # contour du haut exposé (hors pantalon)
+        shoe[..., 3] = smoothstep(0.3, 0.7, cv2.GaussianBlur(shoe[..., 3], (0, 0), 0.6))
+        from .layers import aa_inner_rim
+        r = aa_inner_rim(shoe[..., 3], rim_w) * (yy < y_vis + 9) * np.clip(1 - leg_a * 2, 0, 1)
+        frac = np.clip(r / np.maximum(shoe[..., 3], 1e-4), 0, 1)[..., None]
+        shoe[..., :3] = shoe[..., :3] * (1 - frac) + INK * frac
         new["shoe_" + side] = shoe
-    info["ankle_L"] = pants_pt(210, 450)
-    info["ankle_R"] = pants_pt(285, 449)
+        info["ankle_" + side] = ankle
 
-    # --- bassin : bande d'origine de Mil, bas adouci + entrejambe
+    # --- bassin : bande d'origine, bas adouci, extrémités suivant le pantalon, + entrejambe
     pel = pel.copy()
-    yy = np.arange(H)[:, None]
-    fade = np.clip((500 - yy) / 6.0, 0, 1)  # fondu sur les 6 dernières lignes (coupe du cadre)
+    fade = np.clip((500 - yy) / 6.0, 0, 1)
     pel[..., 3] *= fade
+    lm = legs_a > 0.5
+    span = np.zeros((H, W), np.float32)
+    for y in range(470, min(H, 505)):
+        c = np.where(lm[y])[0]
+        if len(c):
+            span[y, max(0, c.min() - 1):c.max() + 2] = 1.0
+    span = cv2.GaussianBlur(span, (0, 0), 0.7)
+    pel[..., 3] *= np.where(yy >= 484, span, 1.0)
     pel = over(crotch_m, pel)
     new["pelvis"] = pel
 
-    # --- mains
-    # main gauche de Krok (sous le poignet du hoodie), largeur du haut de la main ≈ 30 px
+    # --- mains : main gauche de Krok, plus longue (doigts fins de Mil), largeur du poignet de Mil
     ka = krok_layers["arm_L"]
     hand = ka.copy()
-    # contour de la main seule (sans le bas de la manche violette)
     hm = aa_poly_mask(hand.shape[:2], [(178, 322.5), (208, 322.5), (214, 341), (208, 355), (186, 360), (172, 346), (174, 331)])
     hand[..., 3] *= hm
     K_HAND_TOP = (191.0, 322.0)
     K_HAND_TOP_W = 30.0
-    yy_idx = np.arange(H)[:, None].astype(np.float32)
-    xx_idx = np.arange(W)[None, :].astype(np.float32)
     for side, (fx0, fx1), mirror in (("L", (160.0, 187.5), False), ("R", (305.5, 340.0), True)):
         arm = mil_layers["arm_" + side].copy()
         cx = 0.5 * (fx0 + fx1)
         fw = fx1 - fx0
-        # largeur visée au poignet : légère conicité (avant-bras -> poignet)
-        ww = fw * (0.94 if side == "L" else 0.90)
-        s = (ww + 1.5) / K_HAND_TOP_W
-        E = 9.0                          # prolongement de l'avant-bras (px)
-        y_src = 496.0                    # ligne profil de référence (avant la coupe du cadre)
-        y_cut = 499.0
-        # prolongement : on étire horizontalement la ligne profil autour de l'axe, conicité linéaire
-        t = np.clip((yy_idx - y_cut) / E, 0, 1)
+        sx, sy = HAND_SX[side], HAND_SY
+        ww = K_HAND_TOP_W * sx
+        E = 10.0
+        y_src, y_cut = 496.0, 499.0
+        t = np.clip((yy - y_cut) / E, 0, 1)
         wt = fw + (ww - fw) * t
-        map_x = (cx + (xx_idx - cx) * (fw / wt)).astype(np.float32)
+        map_x = (cx + (xx - cx) * (fw / wt)).astype(np.float32)
         map_y = np.full((H, W), y_src, np.float32)
         a = arm[..., 3:4]
         pre = np.concatenate([arm[..., :3] * a, a], 2).astype(np.float32)
         ext = cv2.remap(pre, np.broadcast_to(map_x, (H, W)).copy(), map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
         ext_a = ext[..., 3:4]
         ext_rgb = ext[..., :3] / np.maximum(ext_a, 1e-5)
-        band = ((yy_idx >= y_cut - 2) & (yy_idx < y_cut + E)).astype(np.float32)
-        fade = np.clip((y_cut + E - yy_idx) / 3.0, 0, 1)  # bas adouci sur 3 px, par-dessus la main
-        ext_l = np.concatenate([np.clip(ext_rgb, 0, 1), ext_a * (band * fade)[..., None]], 2)
-        # main : haut caché sous le prolongement (recouvrement 3 px)
-        top_y = y_cut + E - 3.0
-        Mh = hand_matrix(K_HAND_TOP, (cx, top_y), s, mirror)
-        hand_m = warp_layer(hand, Mh, out_shape)
+        band = ((yy >= y_cut - 2) & (yy < y_cut + E)).astype(np.float32)
+        fadeh = np.clip((y_cut + E - yy) / 4.0, 0, 1)
+        ext_l = np.concatenate([np.clip(ext_rgb, 0, 1), ext_a * (band * fadeh)[..., None]], 2)
+        top_y = y_cut + E - 4.0
+        Mh = hand_matrix(K_HAND_TOP, (cx, top_y), sx, sy, mirror)
+        hand_m = keep_main_blob(warp_layer(hand, Mh, out_shape))
         arm_cut = arm.copy()
-        arm_cut[..., 3] *= (yy_idx < y_cut).astype(np.float32)
+        arm_cut[..., 3] *= (yy < y_cut).astype(np.float32)
         comp = over(hand_m, ext_l)
         comp = over(comp, arm_cut)
         new["arm_" + side] = comp
-        info["hand_" + side] = (cx, top_y + 18 * s)
-        info["hand_scale_" + side] = s
+        info["hand_" + side] = (cx, top_y + 18 * sy)
+        info["hand_scale_" + side] = (sx, sy)
     return new, info

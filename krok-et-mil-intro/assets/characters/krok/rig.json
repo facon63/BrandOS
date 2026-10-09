@@ -31,11 +31,11 @@
    "file": "layers/leg_L.png",
    "offset_src": [
     178,
-    296
+    293
    ],
    "size_px": [
-    396,
-    636
+    408,
+    648
    ]
   },
   {
@@ -62,17 +62,17 @@
    },
    "file": "layers/leg_R.png",
    "offset_src": [
-    255,
-    296
+    253,
+    293
    ],
    "size_px": [
-    292,
-    624
+    304,
+    636
    ]
   },
   {
    "name": "shoe_L",
-   "z": 4,
+   "z": 4.9,
    "parent": "leg_L",
    "pivot": [
     210,
@@ -81,16 +81,16 @@
    "file": "layers/shoe_L.png",
    "offset_src": [
     177,
-    432
+    429
    ],
    "size_px": [
-    248,
-    188
+    252,
+    200
    ]
   },
   {
    "name": "shoe_R",
-   "z": 4.1,
+   "z": 5.05,
    "parent": "leg_R",
    "pivot": [
     285,
@@ -99,11 +99,11 @@
    "file": "layers/shoe_R.png",
    "offset_src": [
     260,
-    431
+    428
    ],
    "size_px": [
     304,
-    172
+    184
    ]
   },
   {
@@ -116,36 +116,45 @@
    ],
    "file": "layers/torso.png",
    "offset_src": [
-    169,
-    146
+    168,
+    143
    ],
    "size_px": [
-    688,
-    796
+    696,
+    808
    ]
   },
   {
    "name": "strings",
    "z": 12,
    "parent": "torso",
+   "absorb": {
+    "from": [
+     "torso"
+    ],
+    "dist": 2,
+    "lum": 0.27
+   },
    "pivot": [
     264,
     196
    ],
    "file": "layers/strings.png",
    "offset_src": [
-    241,
-    188
+    239,
+    189
    ],
    "size_px": [
-    196,
-    244
+    200,
+    240
    ]
   },
   {
    "name": "arm_L",
    "z": 20,
    "parent": "torso",
+   "seam_overlay": true,
+   "despur": true,
    "pivot": [
     190,
     206
@@ -171,25 +180,27 @@
    "file": "layers/arm_L.png",
    "offset_src": [
     150,
-    181
+    182
    ],
    "size_px": [
     272,
-    732
+    728
    ]
   },
   {
    "name": "arm_R",
    "z": 20.1,
    "parent": "torso",
+   "seam_overlay": true,
+   "despur": true,
    "pivot": [
-    322,
-    214
+    318,
+    206
    ],
    "bones": {
     "shoulder": [
-     322,
-     214
+     318,
+     206
     ],
     "elbow": [
      332,
@@ -204,14 +215,23 @@
      340
     ]
    },
+   "blend": {
+    "shoulder": 18.0
+   },
+   "widen": {
+    "k": 1.75,
+    "a0": 15.0,
+    "a1": 85.0,
+    "ramp": 16.0
+   },
    "file": "layers/arm_R.png",
    "offset_src": [
-    302,
-    183
+    298,
+    179
    ],
    "size_px": [
-    200,
-    724
+    216,
+    728
    ]
   },
   {
@@ -225,11 +245,29 @@
    "file": "layers/cap_brim.png",
    "offset_src": [
     163,
-    95
+    92
    ],
    "size_px": [
-    196,
-    176
+    204,
+    188
+   ]
+  },
+  {
+   "name": "hair_back",
+   "z": 24,
+   "parent": "head",
+   "pivot": [
+    262,
+    186
+   ],
+   "file": "layers/hair_back.png",
+   "offset_src": [
+    187,
+    83
+   ],
+   "size_px": [
+    528,
+    392
    ]
   },
   {
@@ -243,11 +281,11 @@
    "file": "layers/hair_L.png",
    "offset_src": [
     165,
-    86
+    83
    ],
    "size_px": [
-    320,
-    460
+    328,
+    468
    ]
   },
   {
@@ -260,18 +298,25 @@
    ],
    "file": "layers/hair_R.png",
    "offset_src": [
-    280,
-    88
+    277,
+    85
    ],
    "size_px": [
-    216,
-    444
+    228,
+    456
    ]
   },
   {
    "name": "head",
    "z": 30,
    "parent": "torso",
+   "absorb": {
+    "from": [
+     "torso"
+    ],
+    "dist": 2,
+    "lum": 0.16
+   },
    "pivot": [
     262,
     186
@@ -279,11 +324,11 @@
    "file": "layers/head.png",
    "offset_src": [
     212,
-    67
+    64
    ],
    "size_px": [
-    384,
-    484
+    380,
+    504
    ]
   },
   {
@@ -321,6 +366,44 @@
    "size_px": [
     296,
     92
+   ]
+  },
+  {
+   "name": "arm_L__seam",
+   "z": 20.001,
+   "parent": "torso",
+   "pivot": [
+    190,
+    206
+   ],
+   "overlay_of": "arm_L",
+   "file": "layers/arm_L__seam.png",
+   "offset_src": [
+    182,
+    187
+   ],
+   "size_px": [
+    132,
+    688
+   ]
+  },
+  {
+   "name": "arm_R__seam",
+   "z": 20.101000000000003,
+   "parent": "torso",
+   "pivot": [
+    318,
+    206
+   ],
+   "overlay_of": "arm_R",
+   "file": "layers/arm_R__seam.png",
+   "offset_src": [
+    299,
+    183
+   ],
+   "size_px": [
+    132,
+    584
    ]
   }
  ],

@@ -40,7 +40,7 @@ KROK_SKIN = (0.99, 0.77, 0.58)
 KROK_SKIN_SHADOW = (0.90, 0.56, 0.46)
 
 
-def mil_eyes_open(shape, ink_w=2.2):
+def mil_eyes_open(shape, ink_w=1.9):
     L = np.zeros(shape + (4,), np.float32)
     for e in MIL_EYES:
         cx, cy, r = e["cx"], e["cy"], e["r"]
@@ -50,7 +50,7 @@ def mil_eyes_open(shape, ink_w=2.2):
         sh = aa_poly_mask(shape, circle_pts(cx + 2.6, cy + 2.2, r - 1.6)) * (1 - aa_poly_mask(shape, circle_pts(cx - 1.2, cy - 1.4, r - 2.2)))
         _paint(L, sh * inner * 0.85, (0.78, 0.84, 0.88))
         # pupille un peu plus grande (regard alerte) + reflet
-        _paint(L, aa_poly_mask(shape, circle_pts(cx + 0.6, cy + 0.2, 3.6)), INK)
+        _paint(L, aa_poly_mask(shape, circle_pts(cx + 0.6, cy + 0.2, 3.2)), INK)
         _paint(L, aa_poly_mask(shape, circle_pts(cx - 0.6, cy - 1.0, 0.9)), (1, 1, 1))
         _paint(L, aa_stroke_mask(shape, circle_pts(cx, cy, r), ink_w, closed=True), INK)
         # pli de paupière relevé (fin arc au-dessus)
@@ -58,7 +58,7 @@ def mil_eyes_open(shape, ink_w=2.2):
     return L
 
 
-def mil_eyes_closed(shape, ink_w=2.2):
+def mil_eyes_closed(shape, ink_w=1.9):
     L = np.zeros(shape + (4,), np.float32)
     for e in MIL_EYES:
         cx, cy, r = e["cx"], e["cy"], e["r"]

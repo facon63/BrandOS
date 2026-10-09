@@ -13,6 +13,7 @@ Pose (dict, tout est optionnel, angles en degrés, sens horaire à l'écran = po
   sway = {nom_de_calque: angle}  balancier secondaire (cheveux, cordons, visière…)
   eyes = None | "closed" | "open"
   hide = {noms}                  calques masqués (remplacés par une tenue, par ex.)
+  z = {nom: z}                   ordre d'empilement modifié pour la pose (ex. bras devant les mèches)
 """
 import json
 import math
@@ -99,11 +100,20 @@ class Puppet:
             arr = np.array(Image.open(os.path.join(d, p["file"])).convert("RGBA"))
             self.arrays[p["name"]] = arr
             self.images[p["name"]] = skia_image_from_rgba(arr)
-        self.overrides = {}  # nom -> (skia.Image, offset_src, upscale) : tenues / recolorations
+        self.overrides = {}  # nom -> skia.Image de même cadrage que le calque (tenues / recolorations)
         self.cell = cell
         self.meshes = {}
         for n, p in self.parts.items():
+            if p.get("overlay_of"):
+                continue
             self.meshes[n] = self._mesh(p)
+        for n, p in self.parts.items():
+            if p.get("overlay_of"):
+                base = self.parts[p["overlay_of"]]
+                bm = self.meshes[base["name"]]
+                # même géométrie : coordonnées de texture recalées sur l'offset de l'overlay
+                tex = (bm["pts"] - np.array(p["offset_src"])) * self.up
+                self.meshes[n] = dict(bm, tex=tex)
 
     # ------------------------------------------------------------------ maillage
     def _mesh(self, p):
@@ -141,6 +151,7 @@ class Puppet:
         cum = np.concatenate([[0], np.cumsum(seg_len)])
         best_s = np.zeros(len(pts))
         best_d = np.full(len(pts), np.inf)
+        best_p = np.zeros_like(pts)
         for k in range(len(J) - 1):
             a, b = J[k], J[k + 1]
             ab = b - a
@@ -151,10 +162,13 @@ class Puppet:
             m = dd < best_d
             best_d[m] = dd[m]
             best_s[m] = s[m]
+            best_p[m] = proj[m]
         # facteurs de fondu à chaque articulation
         f = []
+        blend = dict(BLEND)
+        blend.update(p.get("blend", {}))
         for k, b in enumerate(names[:-1] if len(names) > 3 else names):
-            r = BLEND.get(b, 6.0)
+            r = blend.get(b, 6.0)
             f.append(smoothstep(cum[k] - r, cum[k] + r, best_s))
         # poids LBS : w0 parent, w1 os1, w2 os2, w3 os3
         W = []
@@ -163,7 +177,7 @@ class Puppet:
             W.append(acc * (1 - f[k]))
             acc = acc * f[k]
         W.append(acc)
-        return {"names": names, "W": np.stack(W, 1)}  # (N, len(f)+1)
+        return {"names": names, "W": np.stack(W, 1), "s": best_s, "proj": best_p}  # W : (N, len(f)+1)
 
     # ------------------------------------------------------------------ squelette
     def transforms(self, pose):
@@ -210,6 +224,9 @@ class Puppet:
 
     # ------------------------------------------------------------------ rendu
     def positions(self, name, pose, T, chains):
+        base = self.parts[name].get("overlay_of")
+        if base:
+            return self.positions(base, pose, T, chains)
         mesh = self.meshes[name]
         pts = mesh["pts"]
         ph = np.concatenate([pts, np.ones((len(pts), 1))], 1)
@@ -217,6 +234,18 @@ class Puppet:
             mats = chains[name]
             W = mesh["weights"]["W"]
             k = W.shape[1]
+            wid = self.parts[name].get("widen")
+            if wid:
+                # manche vue de profil : elle s'élargit quand le bras se lève (comme s'il pivotait vers la caméra)
+                ang = abs(list(pose.get(name, (0,)))[0])
+                kk = 1.0 + (wid["k"] - 1.0) * float(smoothstep(wid["a0"], wid["a1"], ang))
+                if kk != 1.0:
+                    sv = mesh["weights"]["s"]
+                    pr = mesh["weights"]["proj"]
+                    g = smoothstep(0.0, wid.get("ramp", 14.0), sv)[:, None]
+                    fac = 1.0 + (kk - 1.0) * g
+                    pts = pr + (pts - pr) * fac
+                    ph = np.concatenate([pts, np.ones((len(pts), 1))], 1)
             out = np.zeros((len(pts), 2))
             for i in range(k):
                 M = mats[min(i, len(mats) - 1)]
@@ -236,10 +265,16 @@ class Puppet:
     def visible_parts(self, pose):
         hide = set(pose.get("hide", ()))
         eyes = pose.get("eyes")
+        zo = pose.get("z", {})
         out = []
-        for p in sorted(self.rig["parts"], key=lambda q: q["z"]):
+        def zkey(q):
+            base = q.get("overlay_of")
+            if base:
+                return zo.get(base, self.parts[base]["z"]) + 0.001
+            return zo.get(q["name"], q["z"])
+        for p in sorted(self.rig["parts"], key=zkey):
             n = p["name"]
-            if n in hide:
+            if n in hide or (p.get("overlay_of") in hide):
                 continue
             if p.get("variant"):
                 if not eyes or n != "eyes_" + eyes:
@@ -258,12 +293,19 @@ class Puppet:
             pos = (np.concatenate([pos, np.ones((len(pos), 1))], 1) @ M_place.T)[:, :2]
             mesh = self.meshes[n]
             img = self.overrides.get(n, self.images[n])
+            a_part = alpha
+            base = self.parts[n].get("overlay_of")
+            if base:
+                ang = abs(list(pose.get(base, (0,)))[0]) if base in CHAINS else 0.0
+                a_part = alpha * float(smoothstep(4.0, 20.0, ang))
+                if a_part <= 0.002:
+                    continue
             verts = skia.Vertices(skia.Vertices.kTriangles_VertexMode,
                                   [skia.Point(float(x), float(y)) for x, y in pos],
                                   [skia.Point(float(u), float(v)) for u, v in mesh["tex"]], None, mesh["idx"])
             paint = skia.Paint(Shader=img.makeShader(skia.TileMode.kDecal, skia.TileMode.kDecal, SAMPLING), AntiAlias=True)
-            if alpha < 1.0:
-                paint.setAlphaf(alpha)
+            if a_part < 1.0:
+                paint.setAlphaf(a_part)
             canvas.drawVertices(verts, paint)
         if extra_draw:
             extra_draw(canvas, 1e9, ctx)

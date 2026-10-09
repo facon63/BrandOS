@@ -84,38 +84,35 @@ def smoothstep(e0, e1, x):
     return t * t * (3 - 2 * t)
 
 
-def upscale_lineart(img, f=4, ink_rgb=(0.02, 0.012, 0.012)):
-    """Upscale ×f d'un calque RGBA style cartoon : Lanczos prémultiplié + accentuation du trait + silhouette nette.
+def upscale_lineart(img, f=4, thr=(0.48, 0.78), amt=0.75):
+    """Upscale ×f d'un calque RGBA style cartoon.
 
-    - couleur : Lanczos sur RGB prémultiplié, léger unsharp mask
-    - trait : la couverture d'encre est lissée puis re-seuillée (smoothstep) => traits nets, anti-aliasés, sans escalier
-    - alpha : bicubique puis smoothstep autour de 0.5 => bord net sans halo
+    - couleur : Lanczos sur RGB prémultiplié + léger unsharp mask ;
+    - trait : là où la luminance est nettement sous le maximum local (cœur des traits), la couleur
+      est tirée vers la couleur la plus sombre du voisinage (noir pour un contour, brun pour une
+      moustache) => traits nets sans épaississement ni noircissement des traits doux ;
+    - alpha : bicubique lissé puis seuil doux autour de 0.5 => silhouette nette sans halo.
     """
     a = img[..., 3:4]
     pre = np.concatenate([img[..., :3] * a, a], 2).astype(np.float32)
     h, w = a.shape[:2]
-    up = cv2.resize(pre, (w * f, h * f), interpolation=cv2.INTER_LANCZOS4)
-    up = np.clip(up, 0, 1)
+    up = np.clip(cv2.resize(pre, (w * f, h * f), interpolation=cv2.INTER_LANCZOS4), 0, 1)
     A = up[..., 3:4]
-    rgb = up[..., :3] / np.maximum(A, 1e-4)
-    rgb = np.clip(rgb, 0, 1)
-    # unsharp léger sur la couleur
+    rgb = np.clip(up[..., :3] / np.maximum(A, 1e-4), 0, 1)
     blur = cv2.GaussianBlur(rgb, (0, 0), f * 0.5)
     rgb = np.clip(rgb + 0.45 * (rgb - blur), 0, 1)
-    # encre : luminance relative au maximum local (remplissage environnant)
     lum = luminance(rgb)
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * f + 3, 2 * f + 3))
-    lmax = cv2.dilate(lum, k)
-    lmax = cv2.GaussianBlur(lmax, (0, 0), f * 0.6)
+    lmax = cv2.GaussianBlur(cv2.dilate(lum, k), (0, 0), f * 0.6)
     ink = np.clip((lmax - lum) / np.maximum(lmax, 0.06), 0, 1)
     ink = cv2.GaussianBlur(ink, (0, 0), f * 0.28)
-    s = smoothstep(0.32, 0.62, ink)[..., None]
-    ink_c = np.array(ink_rgb, np.float32)
-    rgb = rgb * (1 - 0.9 * s) + ink_c * (0.9 * s)
-    # alpha : silhouette nette (seuil doux autour de 0.5 sur l'alpha agrandi et légèrement lissé)
+    s = smoothstep(thr[0], thr[1], ink)[..., None]
+    kk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (f + 1, f + 1))
+    dark = cv2.GaussianBlur(cv2.erode(rgb, kk), (0, 0), f * 0.25)
+    rgb = rgb * (1 - amt * s) + dark * (amt * s)
     As = cv2.GaussianBlur(A[..., 0], (0, 0), f * 0.22)
     A2 = smoothstep(0.30, 0.70, As)
-    return np.concatenate([rgb, A2[..., None]], 2)
+    return np.concatenate([np.clip(rgb, 0, 1), A2[..., None]], 2)
 
 
 def composite_over(bg_rgb, layer, x=0, y=0):

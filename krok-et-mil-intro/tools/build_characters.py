@@ -35,6 +35,12 @@ def export(name, img, layers, parts_meta, extra):
     lay_dir = os.path.join(out_dir, "layers")
     os.makedirs(lay_dir, exist_ok=True)
     rig_parts = []
+    # liserés de couture : calques superposés au membre (même maillage), fondus selon l'angle
+    for meta in list(parts_meta):
+        sn = meta["name"] + "__seam"
+        if sn in layers and layers[sn][..., 3].max() > 0.05:
+            parts_meta.append({"name": sn, "z": meta["z"] + 0.001, "parent": meta.get("parent"),
+                               "pivot": meta.get("pivot"), "overlay_of": meta["name"]})
     for meta in parts_meta:
         L = layers[meta["name"]]
         x0, y0, x1, y1 = bbox(L[..., 3], margin=4)
@@ -76,12 +82,12 @@ def main():
 
     m_meta = [dict(p) for p in spec_mil.spec["parts"]]
     m_meta += [
-        {"name": "leg_L", "z": 5, "parent": "torso", "pivot": CM.pants_pt(226, 338), "constructed": True,
-         "bones": {"hip": CM.pants_pt(225, 352), "knee": CM.pants_pt(221, 402), "ankle": info["ankle_L"]}},
-        {"name": "leg_R", "z": 5.1, "parent": "torso", "pivot": CM.pants_pt(292, 338), "constructed": True,
-         "bones": {"hip": CM.pants_pt(291, 352), "knee": CM.pants_pt(293, 402), "ankle": info["ankle_R"]}},
-        {"name": "shoe_L", "z": 4, "parent": "leg_L", "pivot": info["ankle_L"], "constructed": True},
-        {"name": "shoe_R", "z": 4.1, "parent": "leg_R", "pivot": info["ankle_R"], "constructed": True},
+        {"name": "leg_L", "z": 5, "parent": "torso", "pivot": CM.mil_leg_bones("L")["hip"], "constructed": True,
+         "bones": CM.mil_leg_bones("L")},
+        {"name": "leg_R", "z": 5.1, "parent": "torso", "pivot": CM.mil_leg_bones("R")["hip"], "constructed": True,
+         "bones": CM.mil_leg_bones("R")},
+        {"name": "shoe_L", "z": 4.9, "parent": "leg_L", "pivot": info["ankle_L"], "constructed": True},
+        {"name": "shoe_R", "z": 5.05, "parent": "leg_R", "pivot": info["ankle_R"], "constructed": True},
         {"name": "eyes_open", "z": 31, "parent": "head", "pivot": (250, 258), "variant": True},
         {"name": "eyes_closed", "z": 31.1, "parent": "head", "pivot": (250, 258), "variant": True},
     ]

@@ -102,6 +102,17 @@ def segment(img, spec, line_thresh=0.35, own_radius=4, tie=1.5):
     if rest.any():
         _, (iy, ix) = ndimage.distance_transform_edt(~(labels > 0), return_indices=True)
         labels[rest] = labels[iy[rest], ix[rest]]
+    # absorption : une partie peut récupérer les pixels sombres collés à elle (ombre portée des cordons…)
+    for i, p in enumerate(parts):
+        ab = p.get("absorb")
+        if not ab:
+            continue
+        me = labels == i + 1
+        dd = int(ab.get("dist", 2))
+        near = cv2.dilate(me.astype(np.uint8), np.ones((2 * dd + 1, 2 * dd + 1), np.uint8)).astype(bool)
+        src = np.isin(labels, [names.index(nm) + 1 for nm in ab["from"]])
+        take = near & src & (lum < ab.get("lum", 0.27)) & solid
+        labels[take] = i + 1
     # pixels semi-transparents du bord extérieur (alpha <= .5) -> partie la plus proche
     edge = (a > 0) & ~solid
     if edge.any():
@@ -134,6 +145,8 @@ def ink_matte(img, labels, line, lum, top_idx, lower_mask, band=2):
     lfill = np.where(Wb > 1e-3, lfill, lum.max())
     lin = 0.03
     cov = np.clip((lfill - lum) / np.maximum(lfill - lin, 0.05), 0, 1)
+    # seule une vraie encre (quasi noire) compte : pas les plis sombres du tissu du dessous
+    cov *= np.clip((0.20 - lum) / 0.13, 0, 1)
     out = np.zeros((h, w), np.float32)
     out[near] = cov[near]
     return out, near

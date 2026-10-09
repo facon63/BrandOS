@@ -30,6 +30,15 @@ def aa_stroke_mask(shape, pts, width=2.2, ss=8, closed=False):
     return cv2.resize(m.astype(np.float32) / 255.0, (w, h), interpolation=cv2.INTER_AREA)
 
 
+def aa_inner_rim(alpha, width, ss=4):
+    """Couverture anti-aliasée d'une bande de `width` px à l'intérieur de la silhouette (calcul ×ss)."""
+    h, w = alpha.shape
+    up = cv2.resize(alpha.astype(np.float32), (w * ss, h * ss), interpolation=cv2.INTER_LINEAR) > 0.5
+    d = ndimage.distance_transform_edt(up)
+    cov = np.clip(width * ss + 0.5 - d, 0, 1) * up
+    return cv2.resize(cov.astype(np.float32), (w, h), interpolation=cv2.INTER_AREA)
+
+
 def grain_like(rgb, mask, region, seed=0):
     """Bruit de grain dont l'écart-type imite le résidu haute fréquence de `mask`."""
     hf = rgb - cv2.GaussianBlur(rgb, (0, 0), 1.2)
@@ -112,9 +121,12 @@ def build_layers(img, labels, line, lum, spec, ink_width=2.2):
             region = pm * clipm * (~own).astype(np.float32)
             # traits orphelins : nos pixels de trait collés au calque du dessus (son contour) dans la zone
             stray = np.zeros((h, w), bool)
-            if hd.get("clean_lines"):
-                near_up = cv2.dilate(upper.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
-                stray = (pm > 0.5) & own & near_up & (luminance(rgb) < 0.45)
+            if hd.get("clean_near"):
+                near_names = hd["clean_near"]
+                near_mask = np.isin(labels, [j + 1 for j in range(n) if parts[j]["name"] in near_names])
+                dd = int(hd.get("clean_dist", 2))
+                near_up = cv2.dilate(near_mask.astype(np.uint8), np.ones((2 * dd + 1, 2 * dd + 1), np.uint8)).astype(bool)
+                stray = (pm > 0.5) & own & near_up & (luminance(rgb) < hd.get("clean_lum", 0.45))
             fill = hd.get("fill", "diffuse")
             if fill == "diffuse":
                 col = diffuse_fill(rgb, clean & ~stray, (region > 0) | stray)
@@ -148,7 +160,59 @@ def build_layers(img, labels, line, lum, spec, ink_width=2.2):
             L[..., :3] = np.where(m[..., None], out_c, L[..., :3])
             L[..., 3] = out_a
         L[..., 3] = np.clip(L[..., 3], 0, 1)
+
+        # épines d'encre : traits fins sombres qui dépassent de la silhouette (bouts de contour voisins)
+        if p.get("despur"):
+            m = (L[..., 3] > 0.5).astype(np.uint8)
+            ko = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            body = cv2.dilate(cv2.morphologyEx(m, cv2.MORPH_OPEN, ko), np.ones((3, 3), np.uint8)).astype(bool)
+            spur = (L[..., 3] > 0.02) & ~body & (luminance(L[..., :3]) < 0.35)
+            L[..., 3][spur] = 0.0
+
+        # sous-couche + liseré automatique : le calque se prolonge de `underlay` px sous les calques
+        # du dessus (aucune couture au repos) ; son nouveau bord, invisible au repos, reçoit un liseré
+        # d'encre du calibre du contour extérieur (visible dès que le calque du dessus bouge).
+        ups_b = ups > 0.5
+        if p.get("auto_rim", True) and ups_b.any():
+            cur = L[..., 3].copy()
+            ul = int(p.get("underlay", spec.get("underlay", 3)))
+            kd = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * ul + 1, 2 * ul + 1))
+            curb = cur > 0.5
+            U = cv2.dilate(curb.astype(np.uint8), kd).astype(bool) & ups_b & ~curb
+            hz = ups_b & ~own
+            # zone où le bord reconstruit peut être adouci : sous le dessus, sans jamais déborder sur le fond
+            zone = cv2.dilate(hz.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool) & (a > 0.5) & ~own
+            M = np.maximum(cur, U.astype(np.float32))
+            target = smoothstep(0.3, 0.7, cv2.GaussianBlur(M, (0, 0), 1.0))
+            new_a = np.where(zone, target, cur)
+            add = zone & (new_a > cur + 0.01)
+            if add.any():
+                src_ok = (cur > 0.9) & ~line
+                if not src_ok.any():
+                    src_ok = cur > 0.9
+                colu = diffuse_fill(L[..., :3], src_ok, add)
+                L[..., :3][add] = colu[add]
+            L[..., 3] = new_a
+            rim_w = float(p.get("rim_w", spec.get("rim_w", 2.0)))
+            rim = aa_inner_rim(new_a, rim_w) * zone
+            if rim.any():
+                frac = np.clip(rim / np.maximum(new_a, 1e-4), 0, 1)[..., None]
+                L[..., :3] = L[..., :3] * (1 - frac) + INK * frac
         layers[p["name"]] = L
+        # liseré de couture (calque séparé, affiché seulement quand le membre bouge) : là où le bord
+        # du calque est une coupe dans le tissu (voisin = calque du dessous, sans trait propre)
+        if p.get("seam_overlay"):
+            m = own | (L[..., 3] > 0.5)
+            lowerp = lower_of(i) & (a > 0.5) & ~m
+            dlow = ndimage.distance_transform_edt(~lowerp)
+            rw = float(p.get("rim_w", spec.get("rim_w", 2.0)))
+            rim = np.clip(rw + 0.5 - dlow, 0, 1) * m * (luminance(rgb) > 0.30)
+            # pas sur le contour extérieur d'origine
+            rim *= ndimage.distance_transform_edt(a > 0.5) > 2.5
+            S = np.zeros((h, w, 4), np.float32)
+            S[..., :3] = INK
+            S[..., 3] = rim
+            layers[p["name"] + "__seam"] = S
     return layers
 
 

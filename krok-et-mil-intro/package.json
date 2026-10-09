@@ -7,6 +7,7 @@
     "setup": "python3 -m pip install -r requirements.txt",
     "build:characters": "python3 tools/build_characters.py",
     "review:step2": "python3 tools/review/make_sheets.py",
+    "review:checks": "python3 tools/review/checks.py --sheet",
     "render": "npm run build:characters && echo \"Rendu vidéo : disponible après validation de l'étape 3 (preuve de concept).\""
   }
 }

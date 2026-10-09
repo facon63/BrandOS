@@ -221,7 +221,7 @@ def poses_sheet():
     page = to_pil(arr[..., :3])
     d = ImageDraw.Draw(page)
     d.text((40, 28), "Étape 2 — poses test du rig (déformation par maillage, zones cachées reconstruites)", font=font(40, True), fill=TXT)
-    d.text((40, 82), "« course » est rendue en miroir horizontal. Bras limités à ~110° : au-delà, l'épaule se pince (voir rapport).", font=font(20), fill=DIM)
+    d.text((40, 82), "« course » est rendue en miroir horizontal. Contrôle automatique sur 34 poses : voir etape2_controles_auto.png.", font=font(20), fill=DIM)
     for i, (nm, _) in enumerate(poses):
         d.text((240 + i * 480 - 80, 140), nm, font=font(24, True), fill=(255, 255, 255))
     path = os.path.join(OUT, "etape2_poses_test.png")

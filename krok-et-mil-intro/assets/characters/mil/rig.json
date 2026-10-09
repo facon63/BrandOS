@@ -17,12 +17,12 @@
    "constructed_partly": true,
    "file": "layers/pelvis.png",
    "offset_src": [
-    183,
-    481
+    180,
+    479
    ],
    "size_px": [
-    504,
-    92
+    528,
+    100
    ]
   },
   {
@@ -35,18 +35,19 @@
    ],
    "file": "layers/torso.png",
    "offset_src": [
-    178,
-    226
+    177,
+    223
    ],
    "size_px": [
-    592,
-    1096
+    600,
+    1112
    ]
   },
   {
    "name": "arm_L",
    "z": 20,
    "parent": "torso",
+   "seam_overlay": true,
    "pivot": [
     186,
     302
@@ -72,18 +73,19 @@
    "constructed_partly": true,
    "file": "layers/arm_L.png",
    "offset_src": [
-    153,
+    152,
     277
    ],
    "size_px": [
-    220,
-    1064
+    224,
+    1116
    ]
   },
   {
    "name": "arm_R",
    "z": 20.1,
    "parent": "torso",
+   "seam_overlay": true,
    "pivot": [
     314,
     304
@@ -114,31 +116,63 @@
    ],
    "size_px": [
     248,
-    1104
+    1128
+   ]
+  },
+  {
+   "name": "hair_back",
+   "z": 29,
+   "parent": "head",
+   "pivot": [
+    250,
+    258
+   ],
+   "file": "layers/hair_back.png",
+   "offset_src": [
+    156,
+    86
+   ],
+   "size_px": [
+    732,
+    628
    ]
   },
   {
    "name": "head",
    "z": 30,
    "parent": "torso",
+   "absorb": {
+    "from": [
+     "torso"
+    ],
+    "dist": 1,
+    "lum": 0.4
+   },
    "pivot": [
     250,
     258
    ],
    "file": "layers/head.png",
    "offset_src": [
-    168,
-    124
+    166,
+    119
    ],
    "size_px": [
-    556,
-    588
+    580,
+    608
    ]
   },
   {
    "name": "hair",
    "z": 32,
    "parent": "head",
+   "absorb": {
+    "from": [
+     "head"
+    ],
+    "dist": 2,
+    "lum": 0.2
+   },
    "pivot": [
     240,
     150
@@ -149,8 +183,8 @@
     83
    ],
    "size_px": [
-    656,
-    424
+    660,
+    436
    ]
   },
   {
@@ -176,32 +210,32 @@
    "z": 5,
    "parent": "torso",
    "pivot": [
-    220.5,
-    489.82142857142856
+    216.0,
+    509.3285714285714
    ],
    "constructed": true,
    "bones": {
     "hip": [
-     219.6,
-     508.9214285714286
+     216.0,
+     509.3285714285714
     ],
     "knee": [
-     216.0,
-     577.1357142857142
+     214.2,
+     578.6142857142858
     ],
     "ankle": [
-     206.1,
-     642.6214285714286
+     216.0,
+     647.9
     ]
    },
    "file": "layers/leg_L.png",
    "offset_src": [
-    177,
-    432
+    181,
+    428
    ],
    "size_px": [
-    364,
-    872
+    284,
+    880
    ]
   },
   {
@@ -209,70 +243,70 @@
    "z": 5.1,
    "parent": "torso",
    "pivot": [
-    279.9,
-    489.82142857142856
+    275.4,
+    509.3285714285714
    ],
    "constructed": true,
    "bones": {
     "hip": [
-     279.0,
-     508.9214285714286
+     275.4,
+     509.3285714285714
     ],
     "knee": [
-     280.8,
-     577.1357142857142
+     279.0,
+     578.6142857142858
     ],
     "ankle": [
-     273.6,
-     641.2571428571429
+     286.2,
+     647.9
     ]
    },
    "file": "layers/leg_R.png",
    "offset_src": [
-    245,
-    433
+    225,
+    428
    ],
    "size_px": [
-    272,
-    848
+    376,
+    896
    ]
   },
   {
    "name": "shoe_L",
-   "z": 4,
+   "z": 4.9,
    "parent": "leg_L",
    "pivot": [
-    206.1,
-    642.6214285714286
+    216.0,
+    647.9
    ],
    "constructed": true,
    "file": "layers/shoe_L.png",
    "offset_src": [
-    166,
-    623
+    178,
+    620
    ],
    "size_px": [
-    300,
-    232
+    284,
+    236
    ]
   },
   {
    "name": "shoe_R",
-   "z": 4.1,
+   "z": 5.05,
    "parent": "leg_R",
    "pivot": [
-    273.6,
-    641.2571428571429
+    286.2,
+    647.9
    ],
    "constructed": true,
    "file": "layers/shoe_R.png",
    "offset_src": [
-    244,
-    622
+    257,
+    618
    ],
    "size_px": [
     360,
-    208
+    216
    ]
   },
   {
@@ -311,6 +345,44 @@
    "size_px": [
     364,
     156
+   ]
+  },
+  {
+   "name": "arm_L__seam",
+   "z": 20.001,
+   "parent": "torso",
+   "pivot": [
+    186,
+    302
+   ],
+   "overlay_of": "arm_L",
+   "file": "layers/arm_L__seam.png",
+   "offset_src": [
+    183,
+    280
+   ],
+   "size_px": [
+    92,
+    176
+   ]
+  },
+  {
+   "name": "arm_R__seam",
+   "z": 20.101000000000003,
+   "parent": "torso",
+   "pivot": [
+    314,
+    304
+   ],
+   "overlay_of": "arm_R",
+   "file": "layers/arm_R__seam.png",
+   "offset_src": [
+    294,
+    278
+   ],
+   "size_px": [
+    120,
+    364
    ]
   }
  ],
