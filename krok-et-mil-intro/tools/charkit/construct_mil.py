@@ -159,7 +159,6 @@ def mil_leg_bones(side):
     k = MIRROR_SRC[side]
     return {"hip": pants_pt_mirror(*K_HIP[k]), "knee": pants_pt_mirror(*K_KNEE[k]), "ankle": pants_pt_mirror(*K_ANKLE[k])}
 
-HAND_SX = {"L": 1.00, "R": 1.12}
 HAND_SY = 1.27
 
 
@@ -251,11 +250,15 @@ def construct(mil_layers, mil_img, krok_layers, krok_spec, mil_spec):
     hand[..., 3] *= hm
     K_HAND_TOP = (191.0, 322.0)
     K_HAND_TOP_W = 30.0
-    for side, (fx0, fx1), mirror in (("L", (160.0, 187.5), False), ("R", (305.5, 340.0), True)):
+    for side, mirror in (("L", False), ("R", True)):
         arm = mil_layers["arm_" + side].copy()
+        # bords de l'avant-bras mesurés juste au-dessus de la coupe du cadre (y=496)
+        cols = np.where(arm[496, :, 3] > 0.5)[0]
+        fx0, fx1 = float(cols.min()), float(cols.max() + 1)
         cx = 0.5 * (fx0 + fx1)
         fw = fx1 - fx0
-        sx, sy = HAND_SX[side], HAND_SY
+        # même main des deux côtés : largeur réglée sur le poignet (avant-bras symétriques)
+        sx, sy = round(fw * 0.97 / 30.0, 3), HAND_SY
         ww = K_HAND_TOP_W * sx
         E = 10.0
         y_src, y_cut = 496.0, 499.0

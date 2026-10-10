@@ -46,7 +46,7 @@ de taille dans tous les plans.
 | Pupilles (centres de l'iris) | (244,5 ; 117) et (281,5 ; 117) → 37 | regard centré, très légèrement vers la gauche de l'image |
 | Épaules / buste | ≈ 182 de large | hoodie ample, arrondi en tonneau |
 | Jambes visibles (ourlet → semelle) | ≈ 140 (33 %) | jambes courtes, légèrement écartées, pied droit tourné vers l'extérieur |
-| Pose de référence | de face, buste très légèrement tourné vers la gauche de l'image (manche droite vue de profil, étroite) | |
+| Pose de référence | de face, buste très légèrement tourné vers la gauche de l'image (manche droite vue de profil, étroite) | dans le rig, bras rendus symétriques (§5) |
 
 ### Palette (hex échantillonnés)
 
@@ -185,6 +185,16 @@ flancs du buste et coins bas du hoodie sous les bras, cou sous le menton, capuch
 mèches, haut des jambes sous l'ourlet, pantalon sous les mains, intérieur de cuisse, crâne sous
 la casquette / la frange, haut des chaussures sous le pantalon, cheveux sous l'arceau du casque.
 
+**Bras symétriques.** Les références sont de trois-quarts : un bras y est beaucoup plus fin que
+l'autre (Krok : manche droite vue de profil, ~20 u contre ~46 u ; Mil : bras gauche ~22 px-Mil
+contre ~37). Immobile, cela se lit comme de la perspective ; en mouvement, on voit un bras plus
+petit que l'autre. Le bras fin est donc remplacé par le **miroir exact du bras complet**, placé à
+l'épaule opposée (axe = milieu du corps : Krok x = 256, Mil x = 250) : même largeur ligne à ligne,
+même main, même longueur. Chez Krok, le haut de capuche au-dessus de l'épaule gauche est recopié
+en miroir sous le torse à droite pour que la nouvelle épaule s'y raccorde. Au repos, la silhouette
+devient donc de face (épaules symétriques) au lieu d'un léger trois-quarts ; le visage, les cheveux,
+la casquette et le casque restent strictement ceux des références.
+
 Règles automatiques appliquées à tous les calques :
 - **sous-couche** : chaque calque se prolonge de 3 px sous les calques du dessus → aucune couture
   semi-transparente au repos ;
@@ -211,10 +221,7 @@ Règles automatiques appliquées à tous les calques :
 
 - Références de face uniquement : pas de vrai profil ni de dos (plans remplacés par
   face/trois-quarts, miroir, échelle, caméra).
-- Bras levés : propres jusqu'à ~110°, sauf la **manche droite de Krok** (vue de profil, très
-  étroite) : le moteur l'élargit progressivement quand elle se lève (×1,75 à 85°) pour éviter
-  l'effet « spaghetti », mais au-delà de **90°** sa racine se dentelle. Limite retenue : 90° pour ce
-  bras ; les gestes amples (high-five, bras levé) se feront avec le bras gauche de Krok.
+- Bras levés : propres jusqu'à ~110° pour les quatre bras (voir « Bras symétriques » au §5).
 - Plages validées par le contrôle automatique (`tools/review/checks.py`, 19 poses × 2) : tête
   ±6°, balancier des cheveux ±8°, hanches ±20°, genoux ±30°, squash 0,9–1,1, chevilles ±25°.
   Aucun bord sans encre. Les « trous » restants sont des espaces négatifs naturels (fond vu

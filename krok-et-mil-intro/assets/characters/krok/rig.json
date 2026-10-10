@@ -194,43 +194,35 @@
    "seam_overlay": true,
    "despur": true,
    "pivot": [
-    318,
+    322.0,
     206
    ],
    "bones": {
     "shoulder": [
-     318,
+     322.0,
      206
     ],
     "elbow": [
-     332,
+     330.0,
      266
     ],
     "wrist": [
-     333,
-     320
+     322.0,
+     322
     ],
     "hand": [
-     331,
-     340
+     320.0,
+     342
     ]
    },
-   "blend": {
-    "shoulder": 18.0
-   },
-   "widen": {
-    "k": 1.75,
-    "a0": 15.0,
-    "a1": 85.0,
-    "ramp": 16.0
-   },
+   "mirror_of": "arm_L",
    "file": "layers/arm_R.png",
    "offset_src": [
-    298,
-    179
+    294,
+    182
    ],
    "size_px": [
-    216,
+    272,
     728
    ]
   },
@@ -392,18 +384,18 @@
    "z": 20.101000000000003,
    "parent": "torso",
    "pivot": [
-    318,
+    322.0,
     206
    ],
    "overlay_of": "arm_R",
    "file": "layers/arm_R__seam.png",
    "offset_src": [
-    299,
-    183
+    297,
+    187
    ],
    "size_px": [
     132,
-    584
+    688
    ]
   }
  ],

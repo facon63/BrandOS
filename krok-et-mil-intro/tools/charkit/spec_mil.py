@@ -92,4 +92,7 @@ barriers = [
 overrides = []
 
 spec = {"name": NAME, "src": SRC, "parts": parts, "barriers": barriers, "overrides": overrides,
-        "top_y": TOP_Y, "pad_bottom": PAD_BOTTOM, "rim_w": 2.4, "underlay": 3}
+        "top_y": TOP_Y, "pad_bottom": PAD_BOTTOM, "rim_w": 2.4, "underlay": 3,
+        # bras gauche = miroir du bras droit (le gauche de la référence est ~1,7× plus fin) ;
+        # axe = milieu des deux épaules ; modelé symétrique (bords extérieurs plus sombres)
+        "symmetry": [{"part": "arm_L", "of": "arm_R", "axis": 250.0, "shading": "mirror"}]}

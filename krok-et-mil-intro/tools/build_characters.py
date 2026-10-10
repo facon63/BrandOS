@@ -17,6 +17,7 @@ from charkit.segment import segment  # noqa: E402
 from charkit.layers import build_layers, bbox  # noqa: E402
 from charkit import construct_mil as CM  # noqa: E402
 from charkit import expressions as EX  # noqa: E402
+from charkit import symmetry as SY  # noqa: E402
 from charkit import spec_krok, spec_mil  # noqa: E402
 
 UP = 4
@@ -62,6 +63,13 @@ def main():
     t0 = time.time()
     k_img, k_lab, k_layers = build_1x(spec_krok.spec)
     m_img, m_lab, m_layers = build_1x(spec_mil.spec)
+    k_meta = [dict(p) for p in spec_krok.spec["parts"]]
+    m_meta = [dict(p) for p in spec_mil.spec["parts"]]
+    # bras symétriques (les références de trois-quarts ont un bras bien plus fin que l'autre)
+    for rule in spec_krok.spec.get("symmetry", []):
+        SY.symmetrize(k_layers, k_meta, rule)
+    for rule in spec_mil.spec.get("symmetry", []):
+        SY.symmetrize(m_layers, m_meta, rule)
     new, info = CM.construct(m_layers, m_img, k_layers, spec_krok.spec, spec_mil.spec)
     m_layers.update(new)
 
@@ -70,7 +78,6 @@ def main():
     m_layers["eyes_open"] = EX.mil_eyes_open(m_img.shape[:2])
     m_layers["eyes_closed"] = EX.mil_eyes_closed(m_img.shape[:2])
 
-    k_meta = [dict(p) for p in spec_krok.spec["parts"]]
     k_meta.append({"name": "eyes_closed", "z": 31, "parent": "head", "pivot": (262, 186), "variant": True})
     krok_extra = {
         "top_y": spec_krok.TOP_Y, "sole_y": spec_krok.SOLE_Y, "ground_x": 256.0,
@@ -80,7 +87,6 @@ def main():
     }
     export("krok", k_img, k_layers, k_meta, krok_extra)
 
-    m_meta = [dict(p) for p in spec_mil.spec["parts"]]
     m_meta += [
         {"name": "leg_L", "z": 5, "parent": "torso", "pivot": CM.mil_leg_bones("L")["hip"], "constructed": True,
          "bones": CM.mil_leg_bones("L")},

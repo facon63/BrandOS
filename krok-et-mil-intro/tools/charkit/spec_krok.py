@@ -97,8 +97,7 @@ parts = [
         "polys": [[(301, 186), (352, 196), (350, 330), (340, 358), (323, 360), (318, 352), (320, 330), (323, 300), (316, 262), (309, 232), (304, 205)]],
         "pivot": (318, 206),
         "bones": {"shoulder": (318, 206), "elbow": (332, 266), "wrist": (333, 320), "hand": (331, 340)},
-        "blend": {"shoulder": 18.0},
-        "widen": {"k": 1.75, "a0": 15.0, "a1": 85.0, "ramp": 16.0},
+
     },
     {
         "name": "cap_brim", "z": 22, "parent": "head", "prio": 50,
@@ -163,4 +162,10 @@ overrides = [
 ]
 
 spec = {"name": NAME, "src": SRC, "parts": parts, "barriers": barriers, "overrides": overrides,
-        "top_y": TOP_Y, "sole_y": SOLE_Y, "rim_w": 1.9, "underlay": 3}
+        "top_y": TOP_Y, "sole_y": SOLE_Y, "rim_w": 1.9, "underlay": 3,
+        # bras droit = miroir du bras gauche (la manche droite de la référence, vue de profil, est
+        # ~2,3× plus fine) ; axe = milieu du corps (flancs reconstruits x≈177 et x≈335)
+        "symmetry": [{"part": "arm_R", "of": "arm_L", "axis": 256.0, "shading": "mirror"},
+                     # capuche au-dessus de l'épaule gauche recopiée sous le torse à droite (comble le
+                     # vide entre la capuche étroite de la référence et l'épaule symétrisée)
+                     {"patch_under": "torso", "poly": [(150, 200), (160, 184), (176, 176), (200, 168), (226, 162), (230, 200)], "axis": 256.0}]}
